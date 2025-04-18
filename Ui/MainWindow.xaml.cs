@@ -1,32 +1,25 @@
-﻿using AForge.Video;
-using AForge.Video.DirectShow;
-using Microsoft.Win32;
-using System.Drawing;
+﻿using Microsoft.Win32;
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using Tesseract;
-using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
-using System.Windows.Controls.Primitives;
 using PdfSharp.Drawing;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using PdfSharp.Pdf;
-using System.Windows.Shapes;
-using AForge.Imaging.Filters;
+using OpenCvSharp;
 
 namespace Ui
 {
     /// <summary>
     /// Interaction logic for MainWindow.xaml
     /// </summary>
-    public partial class MainWindow : Window
+    public partial class MainWindow : System.Windows.Window
     {
-        private FilterInfoCollection videoDevices;
-        private VideoCaptureDevice videoSource;
-        private Bitmap currentImage;
+        private VideoCapture? videoCapture;
+        private Mat? currentImage;
 
         public MainWindow()
         {
@@ -36,45 +29,58 @@ namespace Ui
 
         private void InitializeWebcam()
         {
-            videoDevices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
-            if (videoDevices.Count == 0)
+            try
+            {
+                videoCapture = new VideoCapture(0);
+                if (!videoCapture.IsOpened())
+                {
+                    BtnCaptureWebcam.IsEnabled = false;
+                    TxtStatus.Text = "No webcam detected.";
+                }
+            }
+            catch
             {
                 BtnCaptureWebcam.IsEnabled = false;
-                TxtStatus.Text = "No webcam detected.";
+                TxtStatus.Text = "Error initializing webcam.";
             }
         }
 
         private void BtnCaptureWebcam_Click(object sender, RoutedEventArgs e)
         {
-            if (videoDevices.Count == 0) return;
+            if (videoCapture == null || !videoCapture.IsOpened()) return;
 
-            videoSource = new VideoCaptureDevice(videoDevices[0].MonikerString);
-            videoSource.NewFrame += VideoSource_NewFrame;
-            videoSource.Start();
-            TxtStatus.Text = "Webcam started. Click again to capture.";
+            BtnCaptureWebcam.Content = "Capture Frame";
             BtnCaptureWebcam.Click -= BtnCaptureWebcam_Click;
             BtnCaptureWebcam.Click += BtnCaptureFrame_Click;
+
+            // Bắt đầu hiển thị video
+            CompositionTarget.Rendering += RenderWebcamFrame;
+            TxtStatus.Text = "Webcam started. Click 'Capture Frame' to capture.";
         }
 
         private void BtnCaptureFrame_Click(object sender, RoutedEventArgs e)
         {
-            if (videoSource != null && videoSource.IsRunning)
+            if (videoCapture != null && videoCapture.IsOpened())
             {
-                videoSource.SignalToStop();
-                videoSource.WaitForStop();
+                CompositionTarget.Rendering -= RenderWebcamFrame;
+                BtnCaptureWebcam.Content = "Capture from Webcam";
                 BtnCaptureWebcam.Click -= BtnCaptureFrame_Click;
                 BtnCaptureWebcam.Click += BtnCaptureWebcam_Click;
                 TxtStatus.Text = "Image captured from webcam.";
             }
         }
 
-        private void VideoSource_NewFrame(object sender, NewFrameEventArgs eventArgs)
+        private void RenderWebcamFrame(object? sender, EventArgs e)
         {
-            Dispatcher.Invoke(() =>
+            if (videoCapture == null || !videoCapture.IsOpened()) return;
+
+            using Mat frame = new();
+            videoCapture.Read(frame);
+            if (!frame.Empty())
             {
-                currentImage = (Bitmap)eventArgs.Frame.Clone();
-                ImgPreview.Source = BitmapToImageSource(currentImage);
-            });
+                currentImage = frame.Clone();
+                ImgPreview.Source = BitmapSourceFromMat(frame);
+            }
         }
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
@@ -86,15 +92,15 @@ namespace Ui
 
             if (openFileDialog.ShowDialog() == true)
             {
-                currentImage = new Bitmap(openFileDialog.FileName);
-                ImgPreview.Source = BitmapToImageSource(currentImage);
+                currentImage = Cv2.ImRead(openFileDialog.FileName);
+                ImgPreview.Source = BitmapSourceFromMat(currentImage);
                 TxtStatus.Text = "Image selected.";
             }
         }
 
         private void BtnScan_Click(object sender, RoutedEventArgs e)
         {
-            if (currentImage == null)
+            if (currentImage == null || currentImage.Empty())
             {
                 MessageBox.Show("Please select or capture an image first.");
                 return;
@@ -104,7 +110,7 @@ namespace Ui
             {
                 // Lưu Bitmap thành tệp tạm thời
                 string tempImagePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ocr_temp_image.png");
-                currentImage.Save(tempImagePath, System.Drawing.Imaging.ImageFormat.Png);
+                Cv2.ImWrite(tempImagePath, currentImage);
 
                 // Xác định đường dẫn tuyệt đối đến thư mục tessdata
                 string tessdataPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
@@ -352,7 +358,7 @@ namespace Ui
 
         private void BtnAddPictureToPdf_Click(object sender, RoutedEventArgs e)
         {
-            if (currentImage == null)
+            if (currentImage == null || currentImage.Empty())
             {
                 MessageBox.Show("No image to add. Please select or capture an image first.");
                 return;
@@ -378,7 +384,7 @@ namespace Ui
                     }
 
                     // Xử lý hình ảnh để làm rõ chữ
-                    Bitmap processedImage = ProcessImage(currentImage);
+                    using Mat processedImage = ProcessImage(currentImage);
 
                     // Tạo PDF với PdfSharp
                     using (var document = new PdfDocument())
@@ -392,7 +398,7 @@ namespace Ui
                             // Chèn hình ảnh vào PDF
                             using (MemoryStream imageStream = new MemoryStream())
                             {
-                                processedImage.Save(imageStream, System.Drawing.Imaging.ImageFormat.Png);
+                                processedImage.WriteToStream(imageStream, ".png");
                                 imageStream.Position = 0;
                                 XImage xImage = XImage.FromStream(imageStream);
 
@@ -484,39 +490,52 @@ namespace Ui
             }
         }
 
-        private Bitmap ProcessImage(Bitmap inputImage)
+        private Mat ProcessImage(Mat inputImage)
         {
             // Tạo bản sao để xử lý
-            Bitmap processed = (Bitmap)inputImage.Clone();
+            Mat processed = inputImage.Clone();
 
-            // Áp dụng bộ lọc tăng độ sắc nét
-            Sharpen sharpenFilter = new Sharpen();
-            processed = sharpenFilter.Apply(processed);
+            // Chuyển sang grayscale để tăng độ tương phản
+            Mat gray = new();
+            Cv2.CvtColor(processed, gray, ColorConversionCodes.BGR2GRAY);
 
-            // Áp dụng bộ lọc tăng độ tương phản
-            ContrastStretch contrastFilter = new ContrastStretch();
-            processed = contrastFilter.Apply(processed);
+            // Áp dụng bộ lọc tăng độ sắc nét (Laplacian)
+            Mat sharpened = new();
+            //Cv2.Laplacian(gray, sharpened, MatType.CV_16S);
+            Mat sharpened8bit = new();
+            //Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
+            //Cv2.AddWeighted(gray, 1.5, sharpened8bit, -0.5, 0, gray);
 
-            // Điều chỉnh độ sáng (tùy chọn)
-            BrightnessCorrection brightnessFilter = new BrightnessCorrection(10); // Tăng nhẹ độ sáng
-            processed = brightnessFilter.Apply(processed);
+            // Tăng độ tương phản
+            Cv2.Normalize(gray, gray, 0, 255, NormTypes.MinMax);
+
+            // Điều chỉnh độ sáng
+            Mat brightened = new();
+            Cv2.ConvertScaleAbs(gray, brightened, 1.1, 10); // Tăng độ sáng nhẹ
+
+            // Chuyển lại sang BGR để lưu
+            Cv2.CvtColor(brightened, processed, ColorConversionCodes.GRAY2BGR);
+
+            gray.Dispose();
+            sharpened.Dispose();
+            sharpened8bit.Dispose();
+            brightened.Dispose();
 
             return processed;
         }
 
-        private BitmapImage BitmapToImageSource(Bitmap bitmap)
+        private BitmapSource BitmapSourceFromMat(Mat mat)
         {
-            using (MemoryStream memory = new MemoryStream())
-            {
-                bitmap.Save(memory, System.Drawing.Imaging.ImageFormat.Png);
-                memory.Position = 0;
-                BitmapImage bitmapImage = new BitmapImage();
-                bitmapImage.BeginInit();
-                bitmapImage.StreamSource = memory;
-                bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
-                bitmapImage.EndInit();
-                return bitmapImage;
-            }
+            using var stream = new MemoryStream();
+            mat.WriteToStream(stream, ".png");
+            stream.Position = 0;
+            BitmapImage bitmapImage = new();
+            bitmapImage.BeginInit();
+            bitmapImage.StreamSource = stream;
+            bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+            bitmapImage.EndInit();
+            bitmapImage.Freeze();
+            return bitmapImage;
         }
     }
 }
