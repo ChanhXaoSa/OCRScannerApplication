@@ -2,25 +2,20 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
-using Tesseract;
-using System.Windows.Documents;
-using System.Windows.Media;
 using PdfSharp.Drawing;
-using System.Text.RegularExpressions;
-using System.Xml.Linq;
 using PdfSharp.Pdf;
 using OpenCvSharp;
 using System.Diagnostics;
+using System.Windows.Media;
+using System.Windows.Controls;
 
 namespace Ui
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : System.Windows.Window
     {
         private VideoCapture? videoCapture;
         private Mat? currentImage;
+        private List<int> availableWebcamIndices = [];
 
         public MainWindow()
         {
@@ -30,33 +25,81 @@ namespace Ui
 
         private void InitializeWebcam()
         {
-            try
+            availableWebcamIndices = [];
+            CmbWebcamDevices.Items.Clear();
+
+            // Kiểm tra các thiết bị webcam khả dụng (index từ 0 đến 9)
+            for (int i = 0; i < 10; i++)
             {
-                videoCapture = new VideoCapture(0);
-                if (!videoCapture.IsOpened())
+                using var tempCapture = new VideoCapture(i);
+                if (tempCapture.IsOpened())
                 {
-                    BtnCaptureWebcam.IsEnabled = false;
-                    TxtStatus.Text = "No webcam detected.";
+                    availableWebcamIndices.Add(i);
+                    CmbWebcamDevices.Items.Add($"Webcam {i}");
                 }
             }
-            catch
+
+            if (availableWebcamIndices.Count > 0)
+            {
+                CmbWebcamDevices.SelectedIndex = 0; // Chọn webcam đầu tiên mặc định
+                BtnCaptureWebcam.IsEnabled = true;
+                TxtStatus.Text = "Webcam devices detected.";
+            }
+            else
             {
                 BtnCaptureWebcam.IsEnabled = false;
-                TxtStatus.Text = "Error initializing webcam.";
+                TxtStatus.Text = "No webcam detected.";
+            }
+        }
+
+        private void CmbWebcamDevices_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // Đóng webcam hiện tại nếu đang mở
+            if (videoCapture != null)
+            {
+                CompositionTarget.Rendering -= RenderWebcamFrame;
+                videoCapture.Release();
+                videoCapture.Dispose();
+                videoCapture = null;
+            }
+
+            // Nếu đang ở trạng thái chụp, khởi động lại webcam mới
+            if (BtnCaptureWebcam.Content.ToString() == "Capture Frame")
+            {
+                StartWebcam();
             }
         }
 
         private void BtnCaptureWebcam_Click(object sender, RoutedEventArgs e)
         {
-            if (videoCapture == null || !videoCapture.IsOpened()) return;
+            if (availableWebcamIndices.Count == 0) return;
 
             BtnCaptureWebcam.Content = "Capture Frame";
             BtnCaptureWebcam.Click -= BtnCaptureWebcam_Click;
             BtnCaptureWebcam.Click += BtnCaptureFrame_Click;
 
-            // Bắt đầu hiển thị video
-            CompositionTarget.Rendering += RenderWebcamFrame;
+            StartWebcam();
             TxtStatus.Text = "Webcam started. Click 'Capture Frame' to capture.";
+        }
+
+        private void StartWebcam()
+        {
+            if (CmbWebcamDevices.SelectedIndex < 0) return;
+
+            int selectedIndex = availableWebcamIndices[CmbWebcamDevices.SelectedIndex];
+            videoCapture = new VideoCapture(selectedIndex);
+
+            if (!videoCapture.IsOpened())
+            {
+                MessageBox.Show($"Failed to open webcam {selectedIndex}.");
+                BtnCaptureWebcam.Content = "Capture from Webcam";
+                BtnCaptureWebcam.Click -= BtnCaptureFrame_Click;
+                BtnCaptureWebcam.Click += BtnCaptureWebcam_Click;
+                TxtStatus.Text = "Failed to start webcam.";
+                return;
+            }
+
+            CompositionTarget.Rendering += RenderWebcamFrame;
         }
 
         private void BtnCaptureFrame_Click(object sender, RoutedEventArgs e)
@@ -64,6 +107,10 @@ namespace Ui
             if (videoCapture != null && videoCapture.IsOpened())
             {
                 CompositionTarget.Rendering -= RenderWebcamFrame;
+                videoCapture.Release();
+                videoCapture.Dispose();
+                videoCapture = null;
+
                 BtnCaptureWebcam.Content = "Capture from Webcam";
                 BtnCaptureWebcam.Click -= BtnCaptureFrame_Click;
                 BtnCaptureWebcam.Click += BtnCaptureWebcam_Click;
@@ -86,7 +133,7 @@ namespace Ui
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog
+            OpenFileDialog openFileDialog = new()
             {
                 Filter = "Image files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg|All files (*.*)|*.*"
             };
@@ -101,260 +148,14 @@ namespace Ui
 
         private void BtnScan_Click(object sender, RoutedEventArgs e)
         {
-            if (currentImage == null || currentImage.Empty())
-            {
-                MessageBox.Show("Please select or capture an image first.");
-                return;
-            }
-
-            try
-            {
-                // Lưu Bitmap thành tệp tạm thời
-                string tempImagePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ocr_temp_image.png");
-                Cv2.ImWrite(tempImagePath, currentImage);
-
-                // Xác định đường dẫn tuyệt đối đến thư mục tessdata
-                string tessdataPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
-
-                // Kiểm tra xem thư mục tessdata có tồn tại không
-                if (!Directory.Exists(tessdataPath))
-                {
-                    MessageBox.Show($"Thư mục tessdata không tồn tại tại: {tessdataPath}");
-                    TxtStatus.Text = "Scan failed.";
-                    return;
-                }
-
-                // Sử dụng Tesseract để xử lý từ tệp
-                using (var engine = new TesseractEngine(tessdataPath, "vie", EngineMode.Default))
-                {
-                    using (var img = Pix.LoadFromFile(tempImagePath))
-                    {
-                        using (var page = engine.Process(img))
-                        {
-                            // Lấy HOCR để phân tích cấu trúc
-                            string hocrText = page.GetHOCRText(0);
-                            ProcessHocr(hocrText);
-                            TxtStatus.Text = "Scan completed.";
-                        }
-                    }
-                }
-
-                // Xóa tệp tạm thời
-                File.Delete(tempImagePath);
-            }
-            catch (TesseractException tex)
-            {
-                MessageBox.Show($"Tesseract Error: {tex.Message}\nStack Trace: {tex.StackTrace}");
-                TxtStatus.Text = "Scan failed.";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"General Error: {ex.Message}\nStack Trace: {ex.StackTrace}");
-                TxtStatus.Text = "Scan failed.";
-            }
-        }
-
-        private void ProcessHocr(string hocrText)
-        {
-            RtbOcrResult.Document.Blocks.Clear();
-            var hocrDoc = XDocument.Parse(hocrText);
-
-            // Lấy tất cả các phần tử ocr_line (dòng văn bản)
-            var lines = hocrDoc.Descendants("span")
-                .Where(x => x.Attribute("class")?.Value == "ocr_line")
-                .Select(line => new
-                {
-                    Text = line.Descendants("span")
-                        .Where(w => w.Attribute("class")?.Value == "ocrx_word")
-                        .Select(w => w.Value)
-                        .Aggregate((a, b) => a + " " + b),
-                    Title = line.Attribute("title")?.Value
-                })
-                .ToList();
-
-            // Phân tích dòng để xác định tiêu đề, danh sách, đoạn văn
-            Paragraph currentParagraph = null;
-            bool isListItem = false;
-
-            foreach (var line in lines)
-            {
-                string text = line.Text.Trim();
-                if (string.IsNullOrWhiteSpace(text)) continue;
-
-                // Lấy thông tin tọa độ và kích thước từ title
-                var match = Regex.Match(line.Title, @"bbox (\d+) (\d+) (\d+) (\d+);.*?baseline.*?(\d+\.?\d*)?");
-                if (!match.Success) continue;
-
-                int x = int.Parse(match.Groups[1].Value);
-                int y = int.Parse(match.Groups[2].Value);
-                int width = int.Parse(match.Groups[3].Value) - x;
-                int height = int.Parse(match.Groups[4].Value) - y;
-                float fontSize = height > 0 ? height : 12;
-
-                // Xác định loại dòng dựa trên nội dung và vị trí
-                Run run = new Run(text);
-                run.FontSize = fontSize;
-
-                // Tiêu đề: Dòng đầu tiên, chữ lớn, canh giữa
-                if (y < 100 && fontSize > 16)
-                {
-                    run.FontWeight = FontWeights.Bold;
-                    currentParagraph = new Paragraph(run)
-                    {
-                        TextAlignment = TextAlignment.Center,
-                        Margin = new Thickness(0, 10, 0, 10)
-                    };
-                }
-                // Danh sách gạch đầu dòng hoặc số thứ tự
-                else if (text.StartsWith("◊") || text.StartsWith("♦") || Regex.IsMatch(text, @"^(Bước \d+:|\d+\.)"))
-                {
-                    run.FontWeight = FontWeights.Bold;
-                    currentParagraph = new Paragraph(run)
-                    {
-                        Margin = new Thickness(20, 5, 0, 5)
-                    };
-                    isListItem = true;
-                }
-                // Đoạn văn thường
-                else
-                {
-                    if (isListItem && x > 50)
-                    {
-                        // Tiếp tục danh sách
-                        run.FontWeight = FontWeights.Normal;
-                        currentParagraph.Inlines.Add(new LineBreak());
-                        currentParagraph.Inlines.Add(run);
-                    }
-                    else
-                    {
-                        isListItem = false;
-                        currentParagraph = new Paragraph(run)
-                        {
-                            Margin = new Thickness(0, 5, 0, 5)
-                        };
-                    }
-                }
-
-                RtbOcrResult.Document.Blocks.Add(currentParagraph);
-            }
+            MessageBox.Show("Scan functionality is disabled. Use 'Add Picture to PDF' to export the image directly.");
+            TxtStatus.Text = "Scan disabled.";
         }
 
         private void BtnExportPdf_Click(object sender, RoutedEventArgs e)
         {
-            TextRange textRange = new TextRange(RtbOcrResult.Document.ContentStart, RtbOcrResult.Document.ContentEnd);
-            if (string.IsNullOrWhiteSpace(textRange.Text.Trim()))
-            {
-                MessageBox.Show("No text to export.");
-                return;
-            }
-
-            SaveFileDialog saveFileDialog = new SaveFileDialog
-            {
-                Filter = "PDF files (*.pdf)|*.pdf",
-                FileName = "ScannedDocument.pdf"
-            };
-
-            if (saveFileDialog.ShowDialog() == true)
-            {
-                try
-                {
-                    // Đảm bảo thư mục đích có quyền ghi
-                    string directory = System.IO.Path.GetDirectoryName(saveFileDialog.FileName);
-                    if (!Directory.Exists(directory))
-                    {
-                        MessageBox.Show("Destination directory does not exist.");
-                        TxtStatus.Text = "PDF export failed.";
-                        return;
-                    }
-
-                    // Tạo PDF với PdfSharp
-                    using (var document = new PdfDocument())
-                    {
-                        var page = document.AddPage();
-                        page.Width = 595; // A4 width in points
-                        page.Height = 842; // A4 height in points
-
-                        using (var gfx = XGraphics.FromPdfPage(page))
-                        {
-                            double yPosition = 20; // Vị trí bắt đầu
-                            double xMargin = 20;
-
-                            foreach (Block block in RtbOcrResult.Document.Blocks)
-                            {
-                                if (block is Paragraph paragraph)
-                                {
-                                    // Lấy canh lề đoạn
-                                    TextAlignment alignment = paragraph.TextAlignment;
-                                    XStringFormat stringFormat = new XStringFormat();
-                                    switch (alignment)
-                                    {
-                                        case TextAlignment.Left:
-                                            stringFormat.Alignment = XStringAlignment.Near;
-                                            break;
-                                        case TextAlignment.Center:
-                                            stringFormat.Alignment = XStringAlignment.Center;
-                                            break;
-                                        case TextAlignment.Right:
-                                            stringFormat.Alignment = XStringAlignment.Far;
-                                            break;
-                                        case TextAlignment.Justify:
-                                            stringFormat.Alignment = XStringAlignment.Near; // PdfSharp không hỗ trợ justify
-                                            break;
-                                    }
-
-                                    foreach (Inline inline in paragraph.Inlines)
-                                    {
-                                        if (inline is Run run)
-                                        {
-                                            // Lấy định dạng từ Run
-                                            string text = run.Text;
-                                            string fontFamily = run.FontFamily.ToString();
-                                            double fontSize = run.FontSize;
-                                            bool isBold = run.FontWeight == FontWeights.Bold;
-                                            bool isItalic = run.FontStyle == FontStyles.Italic;
-                                            var color = run.Foreground as SolidColorBrush;
-
-                                            // Tạo font PdfSharp
-                                            var fontStyle = XFontStyleEx.Regular;
-                                            if (isBold) fontStyle |= XFontStyleEx.Bold;
-                                            if (isItalic) fontStyle |= XFontStyleEx.Italic;
-
-                                            // Sử dụng Times New Roman để hỗ trợ tiếng Việt
-                                            fontFamily = "Times New Roman";
-                                            var font = new XFont(fontFamily, fontSize, fontStyle);
-
-                                            // Chuyển đổi màu WPF sang PdfSharp
-                                            var xBrush = XBrushes.Black;
-                                            if (color != null)
-                                            {
-                                                xBrush = new XSolidBrush(XColor.FromArgb(
-                                                    color.Color.A, color.Color.R, color.Color.G, color.Color.B));
-                                            }
-
-                                            // Vẽ văn bản với canh lề
-                                            gfx.DrawString(text, font, xBrush, new XRect(xMargin, yPosition, page.Width - 2 * xMargin, fontSize * 1.2), stringFormat);
-
-                                            // Cập nhật vị trí y
-                                            yPosition += fontSize * 1.2;
-                                        }
-                                    }
-                                    // Thêm khoảng cách giữa các đoạn
-                                    yPosition += 10;
-                                }
-                            }
-                        }
-
-                        document.Save(saveFileDialog.FileName);
-                    }
-
-                    TxtStatus.Text = "PDF exported successfully.";
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"PDF Error: {ex.Message}\nStack Trace: {ex.StackTrace}");
-                    TxtStatus.Text = "PDF export failed.";
-                }
-            }
+            MessageBox.Show("This function is disabled. Use 'Add Picture to PDF' to export the image directly.");
+            TxtStatus.Text = "PDF export (text) disabled.";
         }
 
         private void BtnAddPictureToPdf_Click(object sender, RoutedEventArgs e)
@@ -375,7 +176,6 @@ namespace Ui
             {
                 try
                 {
-                    // Đảm bảo thư mục đích có quyền ghi
                     string directory = Path.GetDirectoryName(saveFileDialog.FileName) ?? "";
                     if (!Directory.Exists(directory))
                     {
@@ -384,110 +184,43 @@ namespace Ui
                         return;
                     }
 
-                    // Tìm vùng chứa văn bản và cắt
-                    using Mat textRegion = CropPaperRegion(currentImage);
-                    if (textRegion.Empty())
+                    using Mat paperRegion = CropPaperRegion(currentImage);
+                    if (paperRegion.Empty())
                     {
-                        MessageBox.Show("Could not detect text region in the image.");
+                        MessageBox.Show("Could not detect paper region in the image.");
                         TxtStatus.Text = "PDF export failed.";
                         return;
                     }
 
-                    // Xử lý hình ảnh để làm rõ chữ
-                    using Mat processedImage = ProcessImage(textRegion);
+                    using Mat processedImage = ProcessImage(paperRegion);
+                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(processedImage);
 
-                    // Tạo PDF với PdfSharpCore
                     using var document = new PdfDocument();
                     var page = document.AddPage();
-                    page.Width = 595; // A4 width in points
-                    page.Height = 842; // A4 height in points
+                    page.Width = XUnit.FromPoint(595); // A4 width in points
+                    page.Height = XUnit.FromPoint(842); // A4 height in points
 
                     using (var gfx = XGraphics.FromPdfPage(page))
                     {
-                        // Chèn hình ảnh vào PDF
-                        using (MemoryStream imageStream = new())
-                        {
-                            processedImage.WriteToStream(imageStream, ".png");
-                            imageStream.Position = 0;
-                            XImage xImage = XImage.FromStream(imageStream);
+                        using MemoryStream imageStream = new();
+                        imageWithWhiteBackground.WriteToStream(imageStream, ".png");
+                        imageStream.Position = 0;
+                        XImage xImage = XImage.FromStream(imageStream);
 
-                            // Tính toán kích thước hình ảnh để vừa trang
-                            double imgWidth = processedImage.Width;
-                            double imgHeight = processedImage.Height;
-                            double scale = Math.Min((page.Width - 40) / imgWidth, 1000 / imgHeight); // Giới hạn chiều cao 300pt
-                            imgWidth *= scale;
-                            imgHeight *= scale;
+                        double imgWidth = imageWithWhiteBackground.Width;
+                        double imgHeight = imageWithWhiteBackground.Height;
+                        double scale = Math.Min((page.Width.Point - 40) / imgWidth, (page.Height.Point - 40) / imgHeight);
+                        imgWidth *= scale;
+                        imgHeight *= scale;
 
-                            gfx.DrawImage(xImage, 20, 20, imgWidth, imgHeight);
-                            double yPosition = 20 + imgHeight + 20; // Vị trí bắt đầu văn bản
+                        double xPosition = (page.Width.Point - imgWidth) / 2; // Center horizontally
+                        double yPosition = (page.Height.Point - imgHeight) / 2; // Center vertically
 
-                            // Chèn văn bản từ RichTextBox
-                            TextRange textRange = new(RtbOcrResult.Document.ContentStart, RtbOcrResult.Document.ContentEnd);
-                            if (!string.IsNullOrWhiteSpace(textRange.Text.Trim()))
-                            {
-                                foreach (Block block in RtbOcrResult.Document.Blocks)
-                                {
-                                    if (block is Paragraph paragraph)
-                                    {
-                                        // Lấy canh lề đoạn
-                                        TextAlignment alignment = paragraph.TextAlignment;
-                                        XStringFormat stringFormat = new();
-                                        switch (alignment)
-                                        {
-                                            case TextAlignment.Left:
-                                                stringFormat.Alignment = XStringAlignment.Near;
-                                                break;
-                                            case TextAlignment.Center:
-                                                stringFormat.Alignment = XStringAlignment.Center;
-                                                break;
-                                            case TextAlignment.Right:
-                                                stringFormat.Alignment = XStringAlignment.Far;
-                                                break;
-                                            case TextAlignment.Justify:
-                                                stringFormat.Alignment = XStringAlignment.Near;
-                                                break;
-                                        }
-
-                                        foreach (Inline inline in paragraph.Inlines)
-                                        {
-                                            if (inline is Run run)
-                                            {
-                                                // Lấy định dạng từ Run
-                                                string text = run.Text;
-                                                string fontFamily = "Times New Roman";
-                                                double fontSize = run.FontSize;
-                                                bool isBold = run.FontWeight == FontWeights.Bold;
-                                                bool isItalic = run.FontStyle == FontStyles.Italic;
-                                                var color = run.Foreground as SolidColorBrush;
-
-                                                // Tạo font PdfSharpCore
-                                                var fontStyle = XFontStyleEx.Regular;
-                                                if (isBold) fontStyle |= XFontStyleEx.Bold;
-                                                if (isItalic) fontStyle |= XFontStyleEx.Italic;
-                                                var font = new XFont(fontFamily, fontSize, fontStyle);
-
-                                                // Chuyển đổi màu
-                                                var xBrush = XBrushes.Black;
-                                                if (color != null)
-                                                {
-                                                    xBrush = new XSolidBrush(XColor.FromArgb(
-                                                        color.Color.A, color.Color.R, color.Color.G, color.Color.B));
-                                                }
-
-                                                // Vẽ văn bản
-                                                gfx.DrawString(text, font, xBrush, new XRect(20, yPosition, page.Width - 40, fontSize * 1.2), stringFormat);
-                                                yPosition += fontSize * 1.2;
-                                            }
-                                        }
-                                        yPosition += 10;
-                                    }
-                                }
-                            }
-                        }
+                        gfx.DrawImage(xImage, xPosition, yPosition, imgWidth, imgHeight);
                     }
 
                     document.Save(saveFileDialog.FileName);
-                    TxtStatus.Text = "PDF with text region exported successfully.";
+                    TxtStatus.Text = "PDF with image on white background exported successfully.";
                 }
                 catch (Exception ex)
                 {
@@ -497,108 +230,100 @@ namespace Ui
             }
         }
 
-        private void BtnExportWord_Click( object sender, EventArgs e )
+        private void BtnExportWord_Click(object sender, EventArgs e)
         {
-
+            MessageBox.Show("This function is disabled.");
+            TxtStatus.Text = "Word export disabled.";
         }
 
-        private Mat CropPaperRegion(Mat inputImage)
+        private static Mat CropPaperRegion(Mat inputImage)
         {
-            // Tạo bản sao để xử lý
             Mat processed = inputImage.Clone();
 
-            // Chuyển sang grayscale
-            Mat gray = new();
-            Cv2.CvtColor(processed, gray, ColorConversionCodes.BGR2GRAY);
+            // Convert to HSV color space for better paper detection
+            using Mat hsv = new();
+            Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
 
-            // Làm mờ để giảm nhiễu
-            Cv2.GaussianBlur(gray, gray, new OpenCvSharp.Size(5, 5), 0);
+            // Create a mask to detect bright regions (typically white paper)
+            using Mat mask = new();
+            Cv2.InRange(hsv, new Scalar(0, 0, 150), new Scalar(180, 50, 255), mask);
 
-            // Áp dụng Otsu Threshold để tách vùng sáng (giấy) và vùng tối (nền)
-            Mat binary = new();
-            Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+            // Smooth the mask to reduce noise
+            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(9, 9), 0);
 
-            // Áp dụng morphological operation (opening) để loại bỏ nhiễu nhỏ
-            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
-            Mat cleaned = new();
-            Cv2.MorphologyEx(binary, cleaned, MorphTypes.Open, kernel, iterations: 2);
+            // Apply morphological operations to clean up the mask
+            using Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(7, 7));
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 2);
 
-            // Tìm các đường viền (contours)
-            OpenCvSharp.Point[][] contours;
-            HierarchyIndex[] hierarchy;
-            Cv2.FindContours(cleaned, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
+            // Find contours
+            Cv2.FindContours(mask, out OpenCvSharp.Point[][] contours, out _, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
 
-            // Tìm vùng lớn nhất (giả định là tờ giấy)
             double maxArea = 0;
             OpenCvSharp.Rect? paperRect = null;
             foreach (var contour in contours)
             {
                 double area = Cv2.ContourArea(contour);
-                if (area > maxArea && area > (processed.Width * processed.Height * 0.1)) // Đảm bảo vùng đủ lớn
+                if (area > maxArea && area > (processed.Width * processed.Height * 0.2))
                 {
                     maxArea = area;
                     paperRect = Cv2.BoundingRect(contour);
                 }
             }
 
-            // Giải phóng tài nguyên
-            gray.Dispose();
-            binary.Dispose();
-            cleaned.Dispose();
-            kernel.Dispose();
-
             if (paperRect == null)
             {
                 processed.Dispose();
-                return new Mat(); // Trả về Mat rỗng nếu không tìm thấy vùng giấy
+                return new Mat();
             }
 
-            // Mở rộng vùng cắt ra ngoài 50 pixel (đảm bảo vẫn trong ảnh)
-            int padding = 0;
+            int padding = 5; // Add small padding to ensure no content is cropped
             int x = Math.Max(0, paperRect.Value.X - padding);
             int y = Math.Max(0, paperRect.Value.Y - padding);
             int width = Math.Min(processed.Width - x, paperRect.Value.Width + 2 * padding);
             int height = Math.Min(processed.Height - y, paperRect.Value.Height + 2 * padding);
 
-            // Cắt vùng từ ảnh gốc
-            OpenCvSharp.Rect roi = new OpenCvSharp.Rect(x, y, width, height);
-            Mat cropped = new Mat(processed, roi);
+            OpenCvSharp.Rect roi = new(x, y, width, height);
+            Mat cropped = new(processed, roi);
 
             processed.Dispose();
             return cropped;
         }
 
-        private Mat ProcessImage(Mat inputImage)
+        private static Mat ProcessImage(Mat inputImage)
         {
             Mat processed = inputImage.Clone();
 
-            // Tách thành các kênh màu BGR
-            Mat[] channels = Cv2.Split(processed);
+            // Loại bỏ bóng bằng bộ lọc song phương
+            Mat bilateral = new();
+            Cv2.BilateralFilter(processed, bilateral, 11, 17, 17);
 
-            // Áp dụng tăng độ tương phản trên từng kênh
+            // Tách thành các kênh màu BGR
+            Mat[] channels = Cv2.Split(bilateral);
+
+            // Tăng độ tương phản trên từng kênh
             for (int i = 0; i < channels.Length; i++)
             {
                 Cv2.Normalize(channels[i], channels[i], 0, 255, NormTypes.MinMax);
             }
 
-            // Áp dụng bộ lọc Laplacian trên từng kênh để tăng độ sắc nét
+            // Tăng độ sắc nét trên từng kênh
             Mat[] sharpenedChannels = new Mat[channels.Length];
-            //for (int i = 0; i < channels.Length; i++)
-            //{
-            //    Mat sharpened = new();
-            //    Cv2.Laplacian(channels[i], sharpened, MatType.CV_16S);
-            //    Mat sharpened8bit = new();
-            //    Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
-            //    Cv2.AddWeighted(channels[i], 1.5, sharpened8bit, -0.5, 0, channels[i]);
-            //    sharpenedChannels[i] = channels[i];
-            //    sharpened.Dispose();
-            //    sharpened8bit.Dispose();
-            //}
-
-            // Điều chỉnh độ sáng trên từng kênh
             for (int i = 0; i < channels.Length; i++)
             {
-                Cv2.ConvertScaleAbs(channels[i], channels[i], 1.1, 10);
+                Mat sharpened = new();
+                Cv2.Laplacian(channels[i], sharpened, MatType.CV_16S);
+                Mat sharpened8bit = new();
+                Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
+                Cv2.AddWeighted(channels[i], 1.8, sharpened8bit, -0.6, 0, channels[i]);
+                sharpenedChannels[i] = channels[i];
+                sharpened.Dispose();
+                sharpened8bit.Dispose();
+            }
+
+            // Điều chỉnh độ sáng để làm nổi bật chữ và con dấu
+            for (int i = 0; i < channels.Length; i++)
+            {
+                Cv2.ConvertScaleAbs(channels[i], channels[i], 1.2, 15);
             }
 
             // Gộp các kênh lại thành ảnh màu
@@ -609,11 +334,42 @@ namespace Ui
             {
                 channel.Dispose();
             }
+            bilateral.Dispose();
 
             return processed;
         }
 
-        private BitmapSource BitmapSourceFromMat(Mat mat)
+        private static Mat PlaceOnWhiteBackground(Mat inputImage)
+        {
+            // Kích thước nền trắng (A4 ở 300 DPI)
+            int backgroundWidth = 2480; // 8.27 inch * 300 DPI
+            int backgroundHeight = 3508; // 11.69 inch * 300 DPI
+
+            // Tạo hình ảnh nền trắng
+            Mat background = new(backgroundHeight, backgroundWidth, MatType.CV_8UC3, new Scalar(255, 255, 255));
+
+            // Tính toán tỷ lệ để giữ nguyên tỷ lệ khung hình của hình ảnh gốc
+            double scale = Math.Min((double)(backgroundWidth - 80) / inputImage.Width, (double)(backgroundHeight - 80) / inputImage.Height);
+            int newWidth = (int)(inputImage.Width * scale);
+            int newHeight = (int)(inputImage.Height * scale);
+
+            // Thay đổi kích thước hình ảnh gốc
+            Mat resizedImage = new();
+            Cv2.Resize(inputImage, resizedImage, new OpenCvSharp.Size(newWidth, newHeight));
+
+            // Tính vị trí để đặt hình ảnh vào giữa nền trắng
+            int xOffset = (backgroundWidth - newWidth) / 2;
+            int yOffset = (backgroundHeight - newHeight) / 2;
+
+            // Đặt hình ảnh vào giữa nền trắng
+            OpenCvSharp.Rect roi = new(xOffset, yOffset, newWidth, newHeight);
+            resizedImage.CopyTo(new Mat(background, roi));
+
+            resizedImage.Dispose();
+            return background;
+        }
+
+        private static BitmapImage BitmapSourceFromMat(Mat mat)
         {
             using var stream = new MemoryStream();
             mat.WriteToStream(stream, ".png");

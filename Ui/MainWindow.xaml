@@ -16,6 +16,7 @@
         
         <!-- Buttons for capturing/selecting image -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10">
+            <ComboBox x:Name="CmbWebcamDevices" Width="200" Margin="5" SelectionChanged="CmbWebcamDevices_SelectionChanged"/>
             <Button x:Name="BtnCaptureWebcam" Content="Capture from Webcam" Click="BtnCaptureWebcam_Click" Margin="5"/>
             <Button x:Name="BtnSelectImage" Content="Select Image" Click="BtnSelectImage_Click" Margin="5"/>
             <Button x:Name="BtnScan" Content="Scan Image" Click="BtnScan_Click" Margin="5"/>
