@@ -16,6 +16,7 @@ namespace Ui
         private VideoCapture? videoCapture;
         private Mat? currentImage;
         private List<int> availableWebcamIndices = [];
+        private OpenCvSharp.Rect? lastDetectedInnerRect;
 
         public MainWindow()
         {
@@ -25,23 +26,24 @@ namespace Ui
 
         private void InitializeWebcam()
         {
-            availableWebcamIndices = [];
+            availableWebcamIndices = new List<int>();
             CmbWebcamDevices.Items.Clear();
 
-            // Kiểm tra các thiết bị webcam khả dụng (index từ 0 đến 9)
             for (int i = 0; i < 10; i++)
             {
-                using var tempCapture = new VideoCapture(i);
-                if (tempCapture.IsOpened())
+                using (var tempCapture = new VideoCapture(i))
                 {
-                    availableWebcamIndices.Add(i);
-                    CmbWebcamDevices.Items.Add($"Webcam {i}");
+                    if (tempCapture.IsOpened())
+                    {
+                        availableWebcamIndices.Add(i);
+                        CmbWebcamDevices.Items.Add($"Webcam {i}");
+                    }
                 }
             }
 
             if (availableWebcamIndices.Count > 0)
             {
-                CmbWebcamDevices.SelectedIndex = 0; // Chọn webcam đầu tiên mặc định
+                CmbWebcamDevices.SelectedIndex = 0;
                 BtnCaptureWebcam.IsEnabled = true;
                 TxtStatus.Text = "Webcam devices detected.";
             }
@@ -54,7 +56,6 @@ namespace Ui
 
         private void CmbWebcamDevices_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            // Đóng webcam hiện tại nếu đang mở
             if (videoCapture != null)
             {
                 CompositionTarget.Rendering -= RenderWebcamFrame;
@@ -63,7 +64,6 @@ namespace Ui
                 videoCapture = null;
             }
 
-            // Nếu đang ở trạng thái chụp, khởi động lại webcam mới
             if (BtnCaptureWebcam.Content.ToString() == "Capture Frame")
             {
                 StartWebcam();
@@ -99,6 +99,9 @@ namespace Ui
                 return;
             }
 
+            videoCapture.Set(VideoCaptureProperties.FrameWidth, 1280);
+            videoCapture.Set(VideoCaptureProperties.FrameHeight, 720);
+
             CompositionTarget.Rendering += RenderWebcamFrame;
         }
 
@@ -111,10 +114,16 @@ namespace Ui
                 videoCapture.Dispose();
                 videoCapture = null;
 
+                if (lastDetectedInnerRect != null && currentImage != null && !currentImage.Empty())
+                {
+                    // Cắt vùng bên trong hình vuông sáng nhạt
+                    currentImage = new Mat(currentImage, lastDetectedInnerRect.Value);
+                }
+
                 BtnCaptureWebcam.Content = "Capture from Webcam";
                 BtnCaptureWebcam.Click -= BtnCaptureFrame_Click;
                 BtnCaptureWebcam.Click += BtnCaptureWebcam_Click;
-                TxtStatus.Text = "Image captured from webcam.";
+                TxtStatus.Text = "Image captured and cropped from webcam.";
             }
         }
 
@@ -124,11 +133,31 @@ namespace Ui
 
             using Mat frame = new();
             videoCapture.Read(frame);
-            if (!frame.Empty())
+            if (frame.Empty()) return;
+
+            // Phát hiện vùng tờ giấy và lấy hình vuông sáng nhạt bên trong
+            lastDetectedInnerRect = DetectInnerRectangle(frame);
+
+            // Tạo hình vuông sáng nhạt
+            if (lastDetectedInnerRect != null)
             {
-                currentImage = frame.Clone();
-                ImgPreview.Source = BitmapSourceFromMat(frame);
+                // Tạo một lớp phủ sáng nhạt
+                Mat overlay = frame.Clone();
+                Cv2.Rectangle(overlay, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1); // Màu sáng nhạt, trong suốt
+                Cv2.AddWeighted(overlay, 0.5, frame, 0.5, 0, frame); // Kết hợp lớp phủ với khung hình gốc
+                overlay.Dispose();
             }
+
+            currentImage = frame.Clone();
+            ImgPreview.Source = BitmapSourceFromMat(frame);
+        }
+
+        private Mat CropPaperRegion(Mat inputImage)
+        {
+            OpenCvSharp.Rect? innerRect = DetectInnerRectangle(inputImage);
+            if (innerRect == null) return new Mat();
+
+            return new Mat(inputImage, innerRect.Value);
         }
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
@@ -236,59 +265,6 @@ namespace Ui
             TxtStatus.Text = "Word export disabled.";
         }
 
-        private static Mat CropPaperRegion(Mat inputImage)
-        {
-            Mat processed = inputImage.Clone();
-
-            // Convert to HSV color space for better paper detection
-            using Mat hsv = new();
-            Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
-
-            // Create a mask to detect bright regions (typically white paper)
-            using Mat mask = new();
-            Cv2.InRange(hsv, new Scalar(0, 0, 150), new Scalar(180, 50, 255), mask);
-
-            // Smooth the mask to reduce noise
-            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(9, 9), 0);
-
-            // Apply morphological operations to clean up the mask
-            using Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(7, 7));
-            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 2);
-
-            // Find contours
-            Cv2.FindContours(mask, out OpenCvSharp.Point[][] contours, out _, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
-
-            double maxArea = 0;
-            OpenCvSharp.Rect? paperRect = null;
-            foreach (var contour in contours)
-            {
-                double area = Cv2.ContourArea(contour);
-                if (area > maxArea && area > (processed.Width * processed.Height * 0.2))
-                {
-                    maxArea = area;
-                    paperRect = Cv2.BoundingRect(contour);
-                }
-            }
-
-            if (paperRect == null)
-            {
-                processed.Dispose();
-                return new Mat();
-            }
-
-            int padding = 5; // Add small padding to ensure no content is cropped
-            int x = Math.Max(0, paperRect.Value.X - padding);
-            int y = Math.Max(0, paperRect.Value.Y - padding);
-            int width = Math.Min(processed.Width - x, paperRect.Value.Width + 2 * padding);
-            int height = Math.Min(processed.Height - y, paperRect.Value.Height + 2 * padding);
-
-            OpenCvSharp.Rect roi = new(x, y, width, height);
-            Mat cropped = new(processed, roi);
-
-            processed.Dispose();
-            return cropped;
-        }
-
         private static Mat ProcessImage(Mat inputImage)
         {
             Mat processed = inputImage.Clone();
@@ -381,6 +357,57 @@ namespace Ui
             bitmapImage.EndInit();
             bitmapImage.Freeze();
             return bitmapImage;
+        }
+        private OpenCvSharp.Rect? DetectInnerRectangle(Mat inputImage)
+        {
+            Mat processed = inputImage.Clone();
+
+            // Convert to HSV color space
+            Mat hsv = new();
+            Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
+
+            // Create a mask for bright regions (typically white paper)
+            Mat mask = new();
+            Cv2.InRange(hsv, new Scalar(0, 0, 200), new Scalar(180, 30, 255), mask); // Adjusted HSV range for better paper detection
+
+            // Smooth the mask to reduce noise
+            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(5, 5), 0);
+
+            // Apply morphological operations to clean up the mask
+            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 2);
+
+            // Find the largest contour (assumed to be the paper)
+            OpenCvSharp.Point[][] contours;
+            HierarchyIndex[] hierarchy;
+            Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
+            double maxArea = 0;
+            OpenCvSharp.Rect? paperRect = null;
+            foreach (var contour in contours)
+            {
+                double area = Cv2.ContourArea(contour);
+                if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.1)) // Reduced threshold for smaller papers
+                {
+                    maxArea = area;
+                    paperRect = Cv2.BoundingRect(contour);
+                }
+            }
+
+            hsv.Dispose();
+            mask.Dispose();
+            kernel.Dispose();
+            processed.Dispose();
+
+            if (paperRect == null) return null;
+
+            // Ensure the region does not exceed image bounds
+            int newX = Math.Max(0, paperRect.Value.X);
+            int newY = Math.Max(0, paperRect.Value.Y);
+            int newWidth = Math.Min(inputImage.Width - newX, paperRect.Value.Width);
+            int newHeight = Math.Min(inputImage.Height - newY, paperRect.Value.Height);
+
+            return new OpenCvSharp.Rect(newX, newY, newWidth, newHeight);
         }
     }
 }
