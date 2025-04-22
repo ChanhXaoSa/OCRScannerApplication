@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using PdfSharp.Pdf;
 using OpenCvSharp;
+using System.Diagnostics;
 
 namespace Ui
 {
@@ -364,7 +365,7 @@ namespace Ui
                 return;
             }
 
-            SaveFileDialog saveFileDialog = new SaveFileDialog
+            SaveFileDialog saveFileDialog = new()
             {
                 Filter = "PDF files (*.pdf)|*.pdf",
                 FileName = "ScannedDocumentWithImage.pdf"
@@ -375,7 +376,7 @@ namespace Ui
                 try
                 {
                     // Đảm bảo thư mục đích có quyền ghi
-                    string directory = System.IO.Path.GetDirectoryName(saveFileDialog.FileName);
+                    string directory = Path.GetDirectoryName(saveFileDialog.FileName) ?? "";
                     if (!Directory.Exists(directory))
                     {
                         MessageBox.Show("Destination directory does not exist.");
@@ -383,104 +384,110 @@ namespace Ui
                         return;
                     }
 
-                    // Xử lý hình ảnh để làm rõ chữ
-                    using Mat processedImage = ProcessImage(currentImage);
-
-                    // Tạo PDF với PdfSharp
-                    using (var document = new PdfDocument())
+                    // Tìm vùng chứa văn bản và cắt
+                    using Mat textRegion = CropPaperRegion(currentImage);
+                    if (textRegion.Empty())
                     {
-                        var page = document.AddPage();
-                        page.Width = 595; // A4 width in points
-                        page.Height = 842; // A4 height in points
+                        MessageBox.Show("Could not detect text region in the image.");
+                        TxtStatus.Text = "PDF export failed.";
+                        return;
+                    }
 
-                        using (var gfx = XGraphics.FromPdfPage(page))
+                    // Xử lý hình ảnh để làm rõ chữ
+                    using Mat processedImage = ProcessImage(textRegion);
+
+                    // Tạo PDF với PdfSharpCore
+                    using var document = new PdfDocument();
+                    var page = document.AddPage();
+                    page.Width = 595; // A4 width in points
+                    page.Height = 842; // A4 height in points
+
+                    using (var gfx = XGraphics.FromPdfPage(page))
+                    {
+                        // Chèn hình ảnh vào PDF
+                        using (MemoryStream imageStream = new())
                         {
-                            // Chèn hình ảnh vào PDF
-                            using (MemoryStream imageStream = new MemoryStream())
+                            processedImage.WriteToStream(imageStream, ".png");
+                            imageStream.Position = 0;
+                            XImage xImage = XImage.FromStream(imageStream);
+
+                            // Tính toán kích thước hình ảnh để vừa trang
+                            double imgWidth = processedImage.Width;
+                            double imgHeight = processedImage.Height;
+                            double scale = Math.Min((page.Width - 40) / imgWidth, 1000 / imgHeight); // Giới hạn chiều cao 300pt
+                            imgWidth *= scale;
+                            imgHeight *= scale;
+
+                            gfx.DrawImage(xImage, 20, 20, imgWidth, imgHeight);
+                            double yPosition = 20 + imgHeight + 20; // Vị trí bắt đầu văn bản
+
+                            // Chèn văn bản từ RichTextBox
+                            TextRange textRange = new(RtbOcrResult.Document.ContentStart, RtbOcrResult.Document.ContentEnd);
+                            if (!string.IsNullOrWhiteSpace(textRange.Text.Trim()))
                             {
-                                processedImage.WriteToStream(imageStream, ".png");
-                                imageStream.Position = 0;
-                                XImage xImage = XImage.FromStream(imageStream);
-
-                                // Tính toán kích thước hình ảnh để vừa trang
-                                double imgWidth = xImage.PixelWidth;
-                                double imgHeight = xImage.PixelHeight;
-                                double scale = Math.Min((page.Width - 40) / imgWidth, 1000 / imgHeight);
-                                imgWidth *= scale;
-                                imgHeight *= scale;
-
-                                gfx.DrawImage(xImage, 20, 20, imgWidth, imgHeight);
-                                double yPosition = 20 + imgHeight + 20; // Vị trí bắt đầu văn bản
-
-                                // Chèn văn bản từ RichTextBox
-                                TextRange textRange = new TextRange(RtbOcrResult.Document.ContentStart, RtbOcrResult.Document.ContentEnd);
-                                if (!string.IsNullOrWhiteSpace(textRange.Text.Trim()))
+                                foreach (Block block in RtbOcrResult.Document.Blocks)
                                 {
-                                    foreach (Block block in RtbOcrResult.Document.Blocks)
+                                    if (block is Paragraph paragraph)
                                     {
-                                        if (block is Paragraph paragraph)
+                                        // Lấy canh lề đoạn
+                                        TextAlignment alignment = paragraph.TextAlignment;
+                                        XStringFormat stringFormat = new();
+                                        switch (alignment)
                                         {
-                                            // Lấy canh lề đoạn
-                                            TextAlignment alignment = paragraph.TextAlignment;
-                                            XStringFormat stringFormat = new XStringFormat();
-                                            switch (alignment)
-                                            {
-                                                case TextAlignment.Left:
-                                                    stringFormat.Alignment = XStringAlignment.Near;
-                                                    break;
-                                                case TextAlignment.Center:
-                                                    stringFormat.Alignment = XStringAlignment.Center;
-                                                    break;
-                                                case TextAlignment.Right:
-                                                    stringFormat.Alignment = XStringAlignment.Far;
-                                                    break;
-                                                case TextAlignment.Justify:
-                                                    stringFormat.Alignment = XStringAlignment.Near;
-                                                    break;
-                                            }
-
-                                            foreach (Inline inline in paragraph.Inlines)
-                                            {
-                                                if (inline is Run run)
-                                                {
-                                                    // Lấy định dạng từ Run
-                                                    string text = run.Text;
-                                                    string fontFamily = "Times New Roman";
-                                                    double fontSize = run.FontSize;
-                                                    bool isBold = run.FontWeight == FontWeights.Bold;
-                                                    bool isItalic = run.FontStyle == FontStyles.Italic;
-                                                    var color = run.Foreground as SolidColorBrush;
-
-                                                    // Tạo font PdfSharp
-                                                    var fontStyle = XFontStyleEx.Regular;
-                                                    if (isBold) fontStyle |= XFontStyleEx.Bold;
-                                                    if (isItalic) fontStyle |= XFontStyleEx.Italic;
-                                                    var font = new XFont(fontFamily, fontSize, fontStyle);
-
-                                                    // Chuyển đổi màu
-                                                    var xBrush = XBrushes.Black;
-                                                    if (color != null)
-                                                    {
-                                                        xBrush = new XSolidBrush(XColor.FromArgb(
-                                                            color.Color.A, color.Color.R, color.Color.G, color.Color.B));
-                                                    }
-
-                                                    // Vẽ văn bản
-                                                    gfx.DrawString(text, font, xBrush, new XRect(20, yPosition, page.Width - 40, fontSize * 1.2), stringFormat);
-                                                    yPosition += fontSize * 1.2;
-                                                }
-                                            }
-                                            yPosition += 10;
+                                            case TextAlignment.Left:
+                                                stringFormat.Alignment = XStringAlignment.Near;
+                                                break;
+                                            case TextAlignment.Center:
+                                                stringFormat.Alignment = XStringAlignment.Center;
+                                                break;
+                                            case TextAlignment.Right:
+                                                stringFormat.Alignment = XStringAlignment.Far;
+                                                break;
+                                            case TextAlignment.Justify:
+                                                stringFormat.Alignment = XStringAlignment.Near;
+                                                break;
                                         }
+
+                                        foreach (Inline inline in paragraph.Inlines)
+                                        {
+                                            if (inline is Run run)
+                                            {
+                                                // Lấy định dạng từ Run
+                                                string text = run.Text;
+                                                string fontFamily = "Times New Roman";
+                                                double fontSize = run.FontSize;
+                                                bool isBold = run.FontWeight == FontWeights.Bold;
+                                                bool isItalic = run.FontStyle == FontStyles.Italic;
+                                                var color = run.Foreground as SolidColorBrush;
+
+                                                // Tạo font PdfSharpCore
+                                                var fontStyle = XFontStyleEx.Regular;
+                                                if (isBold) fontStyle |= XFontStyleEx.Bold;
+                                                if (isItalic) fontStyle |= XFontStyleEx.Italic;
+                                                var font = new XFont(fontFamily, fontSize, fontStyle);
+
+                                                // Chuyển đổi màu
+                                                var xBrush = XBrushes.Black;
+                                                if (color != null)
+                                                {
+                                                    xBrush = new XSolidBrush(XColor.FromArgb(
+                                                        color.Color.A, color.Color.R, color.Color.G, color.Color.B));
+                                                }
+
+                                                // Vẽ văn bản
+                                                gfx.DrawString(text, font, xBrush, new XRect(20, yPosition, page.Width - 40, fontSize * 1.2), stringFormat);
+                                                yPosition += fontSize * 1.2;
+                                            }
+                                        }
+                                        yPosition += 10;
                                     }
                                 }
                             }
                         }
-
-                        document.Save(saveFileDialog.FileName);
                     }
 
-                    TxtStatus.Text = "PDF with image exported successfully.";
+                    document.Save(saveFileDialog.FileName);
+                    TxtStatus.Text = "PDF with text region exported successfully.";
                 }
                 catch (Exception ex)
                 {
@@ -490,36 +497,118 @@ namespace Ui
             }
         }
 
-        private Mat ProcessImage(Mat inputImage)
+        private void BtnExportWord_Click( object sender, EventArgs e )
+        {
+
+        }
+
+        private Mat CropPaperRegion(Mat inputImage)
         {
             // Tạo bản sao để xử lý
             Mat processed = inputImage.Clone();
 
-            // Chuyển sang grayscale để tăng độ tương phản
+            // Chuyển sang grayscale
             Mat gray = new();
             Cv2.CvtColor(processed, gray, ColorConversionCodes.BGR2GRAY);
 
-            // Áp dụng bộ lọc tăng độ sắc nét (Laplacian)
-            Mat sharpened = new();
-            //Cv2.Laplacian(gray, sharpened, MatType.CV_16S);
-            Mat sharpened8bit = new();
-            //Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
-            //Cv2.AddWeighted(gray, 1.5, sharpened8bit, -0.5, 0, gray);
+            // Làm mờ để giảm nhiễu
+            Cv2.GaussianBlur(gray, gray, new OpenCvSharp.Size(5, 5), 0);
 
-            // Tăng độ tương phản
-            Cv2.Normalize(gray, gray, 0, 255, NormTypes.MinMax);
+            // Áp dụng Otsu Threshold để tách vùng sáng (giấy) và vùng tối (nền)
+            Mat binary = new();
+            Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
 
-            // Điều chỉnh độ sáng
-            Mat brightened = new();
-            Cv2.ConvertScaleAbs(gray, brightened, 1.1, 10); // Tăng độ sáng nhẹ
+            // Áp dụng morphological operation (opening) để loại bỏ nhiễu nhỏ
+            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
+            Mat cleaned = new();
+            Cv2.MorphologyEx(binary, cleaned, MorphTypes.Open, kernel, iterations: 2);
 
-            // Chuyển lại sang BGR để lưu
-            Cv2.CvtColor(brightened, processed, ColorConversionCodes.GRAY2BGR);
+            // Tìm các đường viền (contours)
+            OpenCvSharp.Point[][] contours;
+            HierarchyIndex[] hierarchy;
+            Cv2.FindContours(cleaned, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
 
+            // Tìm vùng lớn nhất (giả định là tờ giấy)
+            double maxArea = 0;
+            OpenCvSharp.Rect? paperRect = null;
+            foreach (var contour in contours)
+            {
+                double area = Cv2.ContourArea(contour);
+                if (area > maxArea && area > (processed.Width * processed.Height * 0.1)) // Đảm bảo vùng đủ lớn
+                {
+                    maxArea = area;
+                    paperRect = Cv2.BoundingRect(contour);
+                }
+            }
+
+            // Giải phóng tài nguyên
             gray.Dispose();
-            sharpened.Dispose();
-            sharpened8bit.Dispose();
-            brightened.Dispose();
+            binary.Dispose();
+            cleaned.Dispose();
+            kernel.Dispose();
+
+            if (paperRect == null)
+            {
+                processed.Dispose();
+                return new Mat(); // Trả về Mat rỗng nếu không tìm thấy vùng giấy
+            }
+
+            // Mở rộng vùng cắt ra ngoài 50 pixel (đảm bảo vẫn trong ảnh)
+            int padding = 0;
+            int x = Math.Max(0, paperRect.Value.X - padding);
+            int y = Math.Max(0, paperRect.Value.Y - padding);
+            int width = Math.Min(processed.Width - x, paperRect.Value.Width + 2 * padding);
+            int height = Math.Min(processed.Height - y, paperRect.Value.Height + 2 * padding);
+
+            // Cắt vùng từ ảnh gốc
+            OpenCvSharp.Rect roi = new OpenCvSharp.Rect(x, y, width, height);
+            Mat cropped = new Mat(processed, roi);
+
+            processed.Dispose();
+            return cropped;
+        }
+
+        private Mat ProcessImage(Mat inputImage)
+        {
+            Mat processed = inputImage.Clone();
+
+            // Tách thành các kênh màu BGR
+            Mat[] channels = Cv2.Split(processed);
+
+            // Áp dụng tăng độ tương phản trên từng kênh
+            for (int i = 0; i < channels.Length; i++)
+            {
+                Cv2.Normalize(channels[i], channels[i], 0, 255, NormTypes.MinMax);
+            }
+
+            // Áp dụng bộ lọc Laplacian trên từng kênh để tăng độ sắc nét
+            Mat[] sharpenedChannels = new Mat[channels.Length];
+            //for (int i = 0; i < channels.Length; i++)
+            //{
+            //    Mat sharpened = new();
+            //    Cv2.Laplacian(channels[i], sharpened, MatType.CV_16S);
+            //    Mat sharpened8bit = new();
+            //    Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
+            //    Cv2.AddWeighted(channels[i], 1.5, sharpened8bit, -0.5, 0, channels[i]);
+            //    sharpenedChannels[i] = channels[i];
+            //    sharpened.Dispose();
+            //    sharpened8bit.Dispose();
+            //}
+
+            // Điều chỉnh độ sáng trên từng kênh
+            for (int i = 0; i < channels.Length; i++)
+            {
+                Cv2.ConvertScaleAbs(channels[i], channels[i], 1.1, 10);
+            }
+
+            // Gộp các kênh lại thành ảnh màu
+            Cv2.Merge(channels, processed);
+
+            // Giải phóng tài nguyên
+            foreach (var channel in channels)
+            {
+                channel.Dispose();
+            }
 
             return processed;
         }

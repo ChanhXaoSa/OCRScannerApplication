@@ -21,6 +21,7 @@
             <Button x:Name="BtnScan" Content="Scan Image" Click="BtnScan_Click" Margin="5"/>
             <Button x:Name="BtnExportPdf" Content="Export to PDF" Click="BtnExportPdf_Click" Margin="5"/>
             <Button x:Name="BtnAddPictureToPdf" Content="Add Picture to PDF" Click="BtnAddPictureToPdf_Click" Margin="5"/>
+            <Button x:Name="BtnExportWord" Content="Export to Word" Click="BtnExportWord_Click" Margin="5"/>
         </StackPanel>
         
         <!-- Image and RichTextBox Editor -->
