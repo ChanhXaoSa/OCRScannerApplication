@@ -187,6 +187,52 @@ namespace Ui
             TxtStatus.Text = "PDF export (text) disabled.";
         }
 
+        private Mat ExtractContent(Mat inputImage)
+        {
+            // Convert the image to grayscale
+            Mat gray = new();
+            Cv2.CvtColor(inputImage, gray, ColorConversionCodes.BGR2GRAY);
+
+            // Apply adaptive thresholding to isolate content
+            Mat binary = new();
+            Cv2.AdaptiveThreshold(gray, binary, 255, AdaptiveThresholdTypes.MeanC, ThresholdTypes.Binary, 15, 5);
+
+            // Find contours to detect the content area
+            OpenCvSharp.Point[][] contours;
+            HierarchyIndex[] hierarchy;
+            Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
+            // Merge all contours to create a bounding box
+            OpenCvSharp.Rect? contentRect = null;
+            foreach (var contour in contours)
+            {
+                OpenCvSharp.Rect rect = Cv2.BoundingRect(contour);
+                contentRect = contentRect.HasValue ? contentRect.Value.Union(rect) : rect;
+            }
+
+            // Expand the bounding box slightly to avoid cutting off content
+            if (contentRect != null)
+            {
+                int padding = 10; // Add padding around the content
+                contentRect = new OpenCvSharp.Rect(
+                    Math.Max(0, contentRect.Value.X - padding),
+                    Math.Max(0, contentRect.Value.Y - padding),
+                    Math.Min(inputImage.Width - contentRect.Value.X, contentRect.Value.Width + 2 * padding),
+                    Math.Min(inputImage.Height - contentRect.Value.Y, contentRect.Value.Height + 2 * padding)
+                );
+
+                Mat content = new(inputImage, contentRect.Value);
+                gray.Dispose();
+                binary.Dispose();
+                return content;
+            }
+
+            // If no content is detected, return an empty Mat
+            gray.Dispose();
+            binary.Dispose();
+            return new Mat();
+        }
+
         private void BtnAddPictureToPdf_Click(object sender, RoutedEventArgs e)
         {
             if (currentImage == null || currentImage.Empty())
@@ -198,32 +244,27 @@ namespace Ui
             SaveFileDialog saveFileDialog = new()
             {
                 Filter = "PDF files (*.pdf)|*.pdf",
-                FileName = "ScannedDocumentWithImage.pdf"
+                FileName = "ScannedDocumentWithContent.pdf"
             };
 
             if (saveFileDialog.ShowDialog() == true)
             {
                 try
                 {
-                    string directory = Path.GetDirectoryName(saveFileDialog.FileName) ?? "";
-                    if (!Directory.Exists(directory))
+                    // Extract the content from the image
+                    using Mat contentImage = ExtractContent(currentImage);
+
+                    if (contentImage.Empty())
                     {
-                        MessageBox.Show("Destination directory does not exist.");
-                        TxtStatus.Text = "PDF export failed.";
+                        MessageBox.Show("No content detected in the image.");
+                        TxtStatus.Text = "Content extraction failed.";
                         return;
                     }
 
-                    using Mat paperRegion = CropPaperRegion(currentImage);
-                    if (paperRegion.Empty())
-                    {
-                        MessageBox.Show("Could not detect paper region in the image.");
-                        TxtStatus.Text = "PDF export failed.";
-                        return;
-                    }
+                    // Place the extracted content on a white background
+                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(contentImage);
 
-                    using Mat processedImage = ProcessImage(paperRegion);
-                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(processedImage);
-
+                    // Create a PDF document and add the image
                     using var document = new PdfDocument();
                     var page = document.AddPage();
                     page.Width = XUnit.FromPoint(595); // A4 width in points
@@ -249,7 +290,7 @@ namespace Ui
                     }
 
                     document.Save(saveFileDialog.FileName);
-                    TxtStatus.Text = "PDF with image on white background exported successfully.";
+                    TxtStatus.Text = "PDF with extracted content exported successfully.";
                 }
                 catch (Exception ex)
                 {
