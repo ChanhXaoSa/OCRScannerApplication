@@ -8,12 +8,12 @@
         mc:Ignorable="d"
         Title="MainWindow" Height="600" Width="800">
     <Grid>
-         <Grid.RowDefinitions>
+        <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        
+
         <!-- Buttons for capturing/selecting image -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10">
             <ComboBox x:Name="CmbWebcamDevices" Width="200" Margin="5" SelectionChanged="CmbWebcamDevices_SelectionChanged"/>
@@ -46,5 +46,12 @@
                 <TextBlock x:Name="TxtStatus" Text="Ready"/>
             </StatusBarItem>
         </StatusBar>
+
+        <ProgressBar x:Name="ScanProgressBar" Height="20" Minimum="0" Maximum="100" Value="0"
+     VerticalAlignment="Bottom" Margin="10" Visibility="Collapsed" />
+
+        <!-- TextBlock for Scanning Status -->
+        <TextBlock x:Name="ScanStatusText" VerticalAlignment="Bottom" Margin="10,0,10,30"
+   Text="Scanning..." Visibility="Collapsed" TextAlignment="Center" />
     </Grid>
 </Window>

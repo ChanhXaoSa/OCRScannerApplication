@@ -135,21 +135,24 @@ namespace Ui
             videoCapture.Read(frame);
             if (frame.Empty()) return;
 
-            // Phát hiện vùng tờ giấy và lấy hình vuông sáng nhạt bên trong
+            // Detect the paper region
             lastDetectedInnerRect = DetectInnerRectangle(frame);
 
-            // Tạo hình vuông sáng nhạt
+            // Create a copy of the frame for display purposes
+            using Mat displayFrame = frame.Clone();
+
+            // Add the blue overlay only to the display frame
             if (lastDetectedInnerRect != null)
             {
-                // Tạo một lớp phủ sáng nhạt
-                Mat overlay = frame.Clone();
-                Cv2.Rectangle(overlay, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1); // Màu sáng nhạt, trong suốt
-                Cv2.AddWeighted(overlay, 0.5, frame, 0.5, 0, frame); // Kết hợp lớp phủ với khung hình gốc
-                overlay.Dispose();
+                Cv2.Rectangle(displayFrame, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1); // Light blue overlay
+                Cv2.AddWeighted(displayFrame, 0.5, frame, 0.5, 0, displayFrame); // Combine overlay with the original frame
             }
 
+            // Update the preview with the display frame
+            ImgPreview.Source = BitmapSourceFromMat(displayFrame);
+
+            // Save the original frame (without overlay) for capturing
             currentImage = frame.Clone();
-            ImgPreview.Source = BitmapSourceFromMat(frame);
         }
 
         private Mat CropPaperRegion(Mat inputImage)
@@ -170,15 +173,149 @@ namespace Ui
             if (openFileDialog.ShowDialog() == true)
             {
                 currentImage = Cv2.ImRead(openFileDialog.FileName);
-                ImgPreview.Source = BitmapSourceFromMat(currentImage);
-                TxtStatus.Text = "Image selected.";
+
+                // Open the AdjustImageWindow
+                AdjustImageWindow adjustWindow = new AdjustImageWindow(currentImage);
+                if (adjustWindow.ShowDialog() == true)
+                {
+                    // Update the main window with the cropped image
+                    currentImage = adjustWindow.CroppedImage;
+                    ImgPreview.Source = BitmapSourceFromMat(currentImage);
+                    TxtStatus.Text = "Image selected and cropped.";
+                }
             }
         }
 
-        private void BtnScan_Click(object sender, RoutedEventArgs e)
+        private async void BtnScan_Click(object sender, RoutedEventArgs e)
         {
-            MessageBox.Show("Scan functionality is disabled. Use 'Add Picture to PDF' to export the image directly.");
-            TxtStatus.Text = "Scan disabled.";
+            if (currentImage == null || currentImage.Empty())
+            {
+                MessageBox.Show("No image to scan. Please select or capture an image first.");
+                return;
+            }
+
+            // Show the progress bar and status text
+            ScanProgressBar.Visibility = Visibility.Visible;
+            ScanStatusText.Visibility = Visibility.Visible;
+            ScanProgressBar.Value = 0;
+            ScanStatusText.Text = "Scanning started...";
+
+            try
+            {
+                // Simulate scanning process
+                await Task.Run(() =>
+                {
+                    // Divide the scanning process into steps
+                    int totalSteps = 5;
+                    for (int step = 1; step <= totalSteps; step++)
+                    {
+                        // Simulate processing time for each step
+                        Thread.Sleep(500);
+
+                        // Update progress (use Dispatcher to update UI from a background thread)
+                        Dispatcher.Invoke(() =>
+                        {
+                            ScanProgressBar.Value = (step * 100) / totalSteps;
+                            ScanStatusText.Text = $"Scanning... {ScanProgressBar.Value}% completed.";
+                        });
+                    }
+
+                    // Perform actual scanning logic (e.g., extracting text, signatures, seals)
+                    using Mat scannedContent = ExtractContent(currentImage);
+
+                    // Update the preview with the scanned content
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!scannedContent.Empty())
+                        {
+                            ImgPreview.Source = BitmapSourceFromMat(scannedContent);
+                            ScanStatusText.Text = "Scanning completed successfully.";
+                        }
+                        else
+                        {
+                            ScanStatusText.Text = "No content detected during scanning.";
+                        }
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during scanning: {ex.Message}");
+                ScanStatusText.Text = "Scanning failed.";
+            }
+            finally
+            {
+                // Hide the progress bar after scanning
+                await Task.Delay(1000); // Delay to let the user see the final status
+                ScanProgressBar.Visibility = Visibility.Collapsed;
+                ScanStatusText.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private async void BtnScanAndDisplayProgress_Click(object sender, RoutedEventArgs e)
+        {
+            if (currentImage == null || currentImage.Empty())
+            {
+                MessageBox.Show("No image to scan. Please select or capture an image first.");
+                return;
+            }
+
+            // Show the progress bar and status text
+            ScanProgressBar.Visibility = Visibility.Visible;
+            ScanStatusText.Visibility = Visibility.Visible;
+            ScanProgressBar.Value = 0;
+            ScanStatusText.Text = "Scanning started...";
+
+            try
+            {
+                // Simulate scanning process
+                await Task.Run(() =>
+                {
+                    // Divide the scanning process into steps
+                    int totalSteps = 5;
+                    for (int step = 1; step <= totalSteps; step++)
+                    {
+                        // Simulate processing time for each step
+                        Thread.Sleep(500);
+
+                        // Update progress (use Dispatcher to update UI from a background thread)
+                        Dispatcher.Invoke(() =>
+                        {
+                            ScanProgressBar.Value = (step * 100) / totalSteps;
+                            ScanStatusText.Text = $"Scanning... {ScanProgressBar.Value}% completed.";
+                        });
+                    }
+
+                    // Perform actual scanning logic (e.g., extracting text, signatures, seals)
+                    using Mat scannedContent = ExtractContent(currentImage);
+
+                    // Update the preview with the scanned content
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!scannedContent.Empty())
+                        {
+                            ImgPreview.Source = BitmapSourceFromMat(scannedContent);
+                            ScanStatusText.Text = "Scanning completed successfully.";
+                        }
+                        else
+                        {
+                            ScanStatusText.Text = "No content detected during scanning.";
+                        }
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during scanning: {ex.Message}");
+                ScanStatusText.Text = "Scanning failed.";
+            }
+            finally
+            {
+                // Hide the progress bar after scanning
+                await Task.Delay(1000); // Delay to let the user see the final status
+                ScanProgressBar.Visibility = Visibility.Collapsed;
+                ScanStatusText.Visibility = Visibility.Collapsed;
+            }
         }
 
         private void BtnExportPdf_Click(object sender, RoutedEventArgs e)
