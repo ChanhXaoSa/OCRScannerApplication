@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -9,108 +10,234 @@ namespace Ui
 {
     public partial class AdjustImageWindow : System.Windows.Window
     {
-        private System.Windows.Point topLeft, topRight, bottomLeft, bottomRight;
-        private readonly Mat originalImage;
+        private Mat originalImage;
+        private Mat displayImage;
+        private OpenCvSharp.Rect detectedRect;
+        private OpenCvSharp.Rect adjustedRect;
+        private bool isDragging = false;
+        private int selectedCorner = -1; // 0: TopLeft, 1: TopRight, 2: BottomRight, 3: BottomLeft
+        private const int cornerSize = 20; // Tăng kích thước góc để dễ nhìn hơn
+        private double scaleX, scaleY;
+
         public Mat CroppedImage { get; private set; }
-        private double currentScale = 1.0; // Initial scale
 
         public AdjustImageWindow(Mat image)
         {
             InitializeComponent();
             originalImage = image.Clone();
-            DisplayedImage.Source = BitmapSourceFromMat(originalImage);
-
-            // Initialize corner positions
-            topLeft = new System.Windows.Point(50, 50);
-            topRight = new System.Windows.Point(200, 50);
-            bottomLeft = new System.Windows.Point(50, 200);
-            bottomRight = new System.Windows.Point(200, 200);
-
-            UpdateCornerPositions();
-            FitImageToWindow();
+            DetectPaperRegion();
+            UpdateDisplayImage();
         }
 
-        private void FitImageToWindow()
+        private void DetectPaperRegion()
         {
-            // Calculate the scale to fit the image within the window
-            double scaleX = ImageCanvas.ActualWidth / originalImage.Width;
-            double scaleY = ImageCanvas.ActualHeight / originalImage.Height;
-            currentScale = Math.Min(scaleX, scaleY);
+            Mat processed = originalImage.Clone();
+            Mat hsv = new();
+            Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
+            Mat mask = new();
+            Cv2.InRange(hsv, new Scalar(0, 0, 150), new Scalar(180, 50, 255), mask);
+            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(9, 9), 0);
+            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(7, 7));
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 3);
 
-            // Apply the scale
-            ImageScaleTransform.ScaleX = currentScale;
-            ImageScaleTransform.ScaleY = currentScale;
-        }
+            OpenCvSharp.Point[][] contours;
+            HierarchyIndex[] hierarchy;
+            Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
 
-        private void UpdateCornerPositions()
-        {
-            Canvas.SetLeft(TopLeftCorner, topLeft.X);
-            Canvas.SetTop(TopLeftCorner, topLeft.Y);
-
-            Canvas.SetLeft(TopRightCorner, topRight.X);
-            Canvas.SetTop(TopRightCorner, topRight.Y);
-
-            Canvas.SetLeft(BottomLeftCorner, bottomLeft.X);
-            Canvas.SetTop(BottomLeftCorner, bottomLeft.Y);
-
-            Canvas.SetLeft(BottomRightCorner, bottomRight.X);
-            Canvas.SetTop(BottomRightCorner, bottomRight.Y);
-        }
-
-        private void CornerButton_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (e.LeftButton == MouseButtonState.Pressed)
+            double maxArea = 0;
+            OpenCvSharp.Rect? paperRect = null;
+            foreach (var contour in contours)
             {
-                Button corner = sender as Button;
-                System.Windows.Point mousePosition = e.GetPosition(ImageCanvas);
+                double area = Cv2.ContourArea(contour);
+                if (area > maxArea && area > (originalImage.Width * originalImage.Height * 0.2))
+                {
+                    maxArea = area;
+                    paperRect = Cv2.BoundingRect(contour);
+                }
+            }
 
-                if (corner == TopLeftCorner) topLeft = mousePosition;
-                else if (corner == TopRightCorner) topRight = mousePosition;
-                else if (corner == BottomLeftCorner) bottomLeft = mousePosition;
-                else if (corner == BottomRightCorner) bottomRight = mousePosition;
+            hsv.Dispose();
+            mask.Dispose();
+            kernel.Dispose();
+            processed.Dispose();
 
-                UpdateCornerPositions();
+            if (paperRect == null)
+            {
+                detectedRect = new OpenCvSharp.Rect(0, 0, originalImage.Width, originalImage.Height);
+            }
+            else
+            {
+                int shrinkFactor = 10;
+                int newWidth = (int)(paperRect.Value.Width * (1 - shrinkFactor / 100.0));
+                int newHeight = (int)(paperRect.Value.Height * (1 - shrinkFactor / 100.0));
+                int newX = paperRect.Value.X + (paperRect.Value.Width - newWidth) / 2;
+                int newY = paperRect.Value.Y + (paperRect.Value.Height - newHeight) / 2;
+
+                newX = Math.Max(0, newX);
+                newY = Math.Max(0, newY);
+                newWidth = Math.Min(originalImage.Width - newX, newWidth);
+                newHeight = Math.Min(originalImage.Height - newY, newHeight);
+
+                detectedRect = new OpenCvSharp.Rect(newX, newY, newWidth, newHeight);
+            }
+
+            adjustedRect = detectedRect;
+            Console.WriteLine($"Detected Rect: {detectedRect}");
+        }
+
+        private void CalculateScale()
+        {
+            double displayWidth = ImgAdjustPreview.ActualWidth;
+            double displayHeight = ImgAdjustPreview.ActualHeight;
+            double imageWidth = originalImage.Width;
+            double imageHeight = originalImage.Height;
+
+            if (displayWidth > 0 && displayHeight > 0)
+            {
+                scaleX = imageWidth / displayWidth;
+                scaleY = imageHeight / displayHeight;
+            }
+            else
+            {
+                scaleX = 1;
+                scaleY = 1;
+            }
+            Console.WriteLine($"ScaleX: {scaleX}, ScaleY: {scaleY}, Display: {displayWidth}x{displayHeight}, Image: {imageWidth}x{imageHeight}");
+        }
+
+        private void ImgAdjustPreview_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            CalculateScale();
+            UpdateDisplayImage();
+        }
+
+        private void UpdateDisplayImage()
+        {
+            displayImage = originalImage.Clone();
+            Mat overlay = displayImage.Clone();
+
+            Cv2.Rectangle(overlay, adjustedRect, new Scalar(255, 255, 200, 128), -1);
+            Cv2.AddWeighted(overlay, 0.5, displayImage, 0.5, 0, displayImage);
+
+            Cv2.Rectangle(displayImage, adjustedRect, new Scalar(0, 255, 0), 2);
+
+            OpenCvSharp.Point topLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y);
+            OpenCvSharp.Point topRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
+            OpenCvSharp.Point bottomRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point bottomLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
+
+            Cv2.Circle(displayImage, topLeft, cornerSize, new Scalar(0, 0, 255), -1);
+            Cv2.Circle(displayImage, topRight, cornerSize, new Scalar(0, 0, 255), -1);
+            Cv2.Circle(displayImage, bottomRight, cornerSize, new Scalar(0, 0, 255), -1);
+            Cv2.Circle(displayImage, bottomLeft, cornerSize, new Scalar(0, 0, 255), -1);
+
+            Console.WriteLine($"Drawing corners - TopLeft: {topLeft}, TopRight: {topRight}, BottomRight: {bottomRight}, BottomLeft: {bottomLeft}");
+
+            ImgAdjustPreview.Source = BitmapSourceFromMat(displayImage);
+            overlay.Dispose();
+        }
+
+        private void ImgAdjustPreview_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            System.Windows.Point mousePos = e.GetPosition(ImgAdjustPreview);
+            OpenCvSharp.Point imagePos = new OpenCvSharp.Point((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
+
+            OpenCvSharp.Point topLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y);
+            OpenCvSharp.Point topRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
+            OpenCvSharp.Point bottomRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point bottomLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
+
+            if (IsPointNearCorner(imagePos, topLeft)) selectedCorner = 0;
+            else if (IsPointNearCorner(imagePos, topRight)) selectedCorner = 1;
+            else if (IsPointNearCorner(imagePos, bottomRight)) selectedCorner = 2;
+            else if (IsPointNearCorner(imagePos, bottomLeft)) selectedCorner = 3;
+            else selectedCorner = -1;
+
+            Console.WriteLine($"MouseDown at ImagePos: {imagePos}, SelectedCorner: {selectedCorner}");
+
+            if (selectedCorner >= 0)
+            {
+                isDragging = true;
+                e.Handled = true;
             }
         }
 
-        private void ZoomInButton_Click(object sender, RoutedEventArgs e)
+        private void ImgAdjustPreview_MouseMove(object sender, MouseEventArgs e)
         {
-            currentScale += 0.1; // Increase scale
-            ImageScaleTransform.ScaleX = currentScale;
-            ImageScaleTransform.ScaleY = currentScale;
+            if (!isDragging || selectedCorner < 0) return;
+
+            System.Windows.Point mousePos = e.GetPosition(ImgAdjustPreview);
+            OpenCvSharp.Point imagePos = new OpenCvSharp.Point((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
+
+            imagePos.X = Math.Max(0, Math.Min(originalImage.Width - 1, imagePos.X));
+            imagePos.Y = Math.Max(0, Math.Min(originalImage.Height - 1, imagePos.Y));
+
+            int x = adjustedRect.X;
+            int y = adjustedRect.Y;
+            int width = adjustedRect.Width;
+            int height = adjustedRect.Height;
+
+            switch (selectedCorner)
+            {
+                case 0: // TopLeft
+                    width = (adjustedRect.X + adjustedRect.Width) - imagePos.X;
+                    height = (adjustedRect.Y + adjustedRect.Height) - imagePos.Y;
+                    x = imagePos.X;
+                    y = imagePos.Y;
+                    break;
+                case 1: // TopRight
+                    width = imagePos.X - adjustedRect.X;
+                    height = (adjustedRect.Y + adjustedRect.Height) - imagePos.Y;
+                    y = imagePos.Y;
+                    break;
+                case 2: // BottomRight
+                    width = imagePos.X - adjustedRect.X;
+                    height = imagePos.Y - adjustedRect.Y;
+                    break;
+                case 3: // BottomLeft
+                    width = (adjustedRect.X + adjustedRect.Width) - imagePos.X;
+                    height = imagePos.Y - adjustedRect.Y;
+                    x = imagePos.X;
+                    break;
+            }
+
+            if (width > 0 && height > 0)
+            {
+                x = Math.Max(0, x);
+                y = Math.Max(0, y);
+                width = Math.Min(originalImage.Width - x, width);
+                height = Math.Min(originalImage.Height - y, height);
+                adjustedRect = new OpenCvSharp.Rect(x, y, width, height);
+                UpdateDisplayImage();
+            }
+
+            e.Handled = true;
         }
 
-        private void ZoomOutButton_Click(object sender, RoutedEventArgs e)
+        private void ImgAdjustPreview_MouseUp(object sender, MouseButtonEventArgs e)
         {
-            currentScale = Math.Max(0.1, currentScale - 0.1); // Decrease scale, but not below 0.1
-            ImageScaleTransform.ScaleX = currentScale;
-            ImageScaleTransform.ScaleY = currentScale;
+            isDragging = false;
+            selectedCorner = -1;
+            e.Handled = true;
         }
 
-        private void ConfirmButton_Click(object sender, RoutedEventArgs e)
+        private bool IsPointNearCorner(OpenCvSharp.Point point, OpenCvSharp.Point corner)
         {
-            // Crop the image based on the adjusted corners
-            var srcPoints = new[]
+            return Math.Abs(point.X - corner.X) <= cornerSize && Math.Abs(point.Y - corner.Y) <= cornerSize;
+        }
+
+        private void BtnConfirm_Click(object sender, RoutedEventArgs e)
+        {
+            if (adjustedRect.Width > 0 && adjustedRect.Height > 0)
             {
-                    new Point2f((float)topLeft.X, (float)topLeft.Y),
-                    new Point2f((float)topRight.X, (float)topRight.Y),
-                    new Point2f((float)bottomRight.X, (float)bottomRight.Y),
-                    new Point2f((float)bottomLeft.X, (float)bottomLeft.Y)
-                };
-
-            var dstPoints = new[]
+                CroppedImage = new Mat(originalImage, adjustedRect);
+                DialogResult = true;
+            }
+            else
             {
-                    new Point2f(0, 0),
-                    new Point2f(originalImage.Width - 1, 0),
-                    new Point2f(originalImage.Width - 1, originalImage.Height - 1),
-                    new Point2f(0, originalImage.Height - 1)
-                };
-
-            Mat perspectiveTransform = Cv2.GetPerspectiveTransform(srcPoints, dstPoints);
-            CroppedImage = new Mat();
-            Cv2.WarpPerspective(originalImage, CroppedImage, perspectiveTransform, new OpenCvSharp.Size(originalImage.Width, originalImage.Height));
-
-            DialogResult = true;
+                MessageBox.Show("Invalid region selected.");
+                DialogResult = false;
+            }
             Close();
         }
 

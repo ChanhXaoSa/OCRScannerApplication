@@ -3,28 +3,17 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Adjust Image" Height="600" Width="800">
     <Grid>
-        <!-- Image Display -->
-        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-            <Canvas x:Name="ImageCanvas" Background="Black" RenderTransformOrigin="0.5,0.5">
-                <Canvas.RenderTransform>
-                    <ScaleTransform x:Name="ImageScaleTransform" />
-                </Canvas.RenderTransform>
-                <Image x:Name="DisplayedImage" Stretch="Uniform" />
-                <!-- Draggable Corner Buttons -->
-                <Button x:Name="TopLeftCorner" Width="10" Height="10" Background="Red" Canvas.Left="50" Canvas.Top="50" />
-                <Button x:Name="TopRightCorner" Width="10" Height="10" Background="Red" Canvas.Left="200" Canvas.Top="50" />
-                <Button x:Name="BottomLeftCorner" Width="10" Height="10" Background="Red" Canvas.Left="50" Canvas.Top="200" />
-                <Button x:Name="BottomRightCorner" Width="10" Height="10" Background="Red" Canvas.Left="200" Canvas.Top="200" />
-            </Canvas>
-        </ScrollViewer>
-
-        <!-- Zoom Controls -->
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10">
-            <Button Content="Zoom In" Width="80" Margin="5" Click="ZoomInButton_Click" />
-            <Button Content="Zoom Out" Width="80" Margin="5" Click="ZoomOutButton_Click" />
-        </StackPanel>
-
-        <!-- Confirm Button -->
-        <Button Content="Confirm" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="10" Width="100" Click="ConfirmButton_Click" />
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="Drag the red corners to adjust the region to be cropped. Press Confirm when done." 
+                   Margin="10" FontSize="14" Foreground="Blue"/>
+        <Image Grid.Row="1" x:Name="ImgAdjustPreview" Stretch="Uniform" 
+               MouseDown="ImgAdjustPreview_MouseDown" MouseMove="ImgAdjustPreview_MouseMove" MouseUp="ImgAdjustPreview_MouseUp"
+               SizeChanged="ImgAdjustPreview_SizeChanged"/>
+        <Button Grid.Row="2" x:Name="BtnConfirm" Content="Confirm" Width="100" Height="30" 
+                HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="10" Click="BtnConfirm_Click"/>
     </Grid>
 </Window>

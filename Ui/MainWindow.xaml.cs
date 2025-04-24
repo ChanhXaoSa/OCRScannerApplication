@@ -165,23 +165,40 @@ namespace Ui
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
         {
-            OpenFileDialog openFileDialog = new()
+            OpenFileDialog openFileDialog = new OpenFileDialog
             {
                 Filter = "Image files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg|All files (*.*)|*.*"
             };
 
             if (openFileDialog.ShowDialog() == true)
             {
-                currentImage = Cv2.ImRead(openFileDialog.FileName);
+                Mat selectedImage = Cv2.ImRead(openFileDialog.FileName);
+                if (selectedImage.Empty())
+                {
+                    MessageBox.Show("Failed to load the selected image.");
+                    TxtStatus.Text = "Image loading failed.";
+                    return;
+                }
 
-                // Open the AdjustImageWindow
-                AdjustImageWindow adjustWindow = new AdjustImageWindow(currentImage);
+                // Mở cửa sổ AdjustImageWindow để chỉnh sửa vùng nhận diện
+                AdjustImageWindow adjustWindow = new AdjustImageWindow(selectedImage);
                 if (adjustWindow.ShowDialog() == true)
                 {
-                    // Update the main window with the cropped image
+                    // Nhận ảnh đã cắt từ AdjustImageWindow
                     currentImage = adjustWindow.CroppedImage;
-                    ImgPreview.Source = BitmapSourceFromMat(currentImage);
-                    TxtStatus.Text = "Image selected and cropped.";
+                    if (currentImage != null && !currentImage.Empty())
+                    {
+                        ImgPreview.Source = BitmapSourceFromMat(currentImage);
+                        TxtStatus.Text = "Image selected and cropped.";
+                    }
+                    else
+                    {
+                        TxtStatus.Text = "No region selected for cropping.";
+                    }
+                }
+                else
+                {
+                    TxtStatus.Text = "Image selection canceled.";
                 }
             }
         }
@@ -381,53 +398,60 @@ namespace Ui
             SaveFileDialog saveFileDialog = new()
             {
                 Filter = "PDF files (*.pdf)|*.pdf",
-                FileName = "ScannedDocumentWithContent.pdf"
+                FileName = "ScannedDocumentWithImage.pdf"
             };
 
             if (saveFileDialog.ShowDialog() == true)
             {
                 try
                 {
-                    // Extract the content from the image
-                    using Mat contentImage = ExtractContent(currentImage);
-
-                    if (contentImage.Empty())
+                    string directory = Path.GetDirectoryName(saveFileDialog.FileName) ?? "";
+                    if (!Directory.Exists(directory))
                     {
-                        MessageBox.Show("No content detected in the image.");
-                        TxtStatus.Text = "Content extraction failed.";
+                        MessageBox.Show("Destination directory does not exist.");
+                        TxtStatus.Text = "PDF export failed.";
                         return;
                     }
 
-                    // Place the extracted content on a white background
-                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(contentImage);
+                    using Mat paperRegion = currentImage; // Đã được cắt từ AdjustImageWindow
+                    if (paperRegion.Empty())
+                    {
+                        MessageBox.Show("Could not detect paper region in the image.");
+                        TxtStatus.Text = "PDF export failed.";
+                        return;
+                    }
 
-                    // Create a PDF document and add the image
+                    using Mat processedImage = ProcessImage(paperRegion);
+                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(processedImage);
+
                     using var document = new PdfDocument();
                     var page = document.AddPage();
-                    page.Width = XUnit.FromPoint(595); // A4 width in points
-                    page.Height = XUnit.FromPoint(842); // A4 height in points
+                    page.Width = 595;
+                    page.Height = 842;
 
                     using (var gfx = XGraphics.FromPdfPage(page))
                     {
-                        using MemoryStream imageStream = new();
-                        imageWithWhiteBackground.WriteToStream(imageStream, ".png");
-                        imageStream.Position = 0;
-                        XImage xImage = XImage.FromStream(imageStream);
+                        using (MemoryStream imageStream = new())
+                        {
+                            imageWithWhiteBackground.WriteToStream(imageStream, ".png");
+                            imageStream.Position = 0;
+                            XImage xImage = XImage.FromStream(imageStream);
 
-                        double imgWidth = imageWithWhiteBackground.Width;
-                        double imgHeight = imageWithWhiteBackground.Height;
-                        double scale = Math.Min((page.Width.Point - 40) / imgWidth, (page.Height.Point - 40) / imgHeight);
-                        imgWidth *= scale;
-                        imgHeight *= scale;
+                            double imgWidth = imageWithWhiteBackground.Width;
+                            double imgHeight = imageWithWhiteBackground.Height;
+                            double scale = Math.Min((page.Width - 40) / imgWidth, (page.Height - 40) / imgHeight);
+                            imgWidth *= scale;
+                            imgHeight *= scale;
 
-                        double xPosition = (page.Width.Point - imgWidth) / 2; // Center horizontally
-                        double yPosition = (page.Height.Point - imgHeight) / 2; // Center vertically
+                            double xPosition = (page.Width - imgWidth) / 2;
+                            double yPosition = (page.Height - imgHeight) / 2;
 
-                        gfx.DrawImage(xImage, xPosition, yPosition, imgWidth, imgHeight);
+                            gfx.DrawImage(xImage, xPosition, yPosition, imgWidth, imgHeight);
+                        }
                     }
 
                     document.Save(saveFileDialog.FileName);
-                    TxtStatus.Text = "PDF with extracted content exported successfully.";
+                    TxtStatus.Text = "PDF with image on white background exported successfully.";
                 }
                 catch (Exception ex)
                 {
