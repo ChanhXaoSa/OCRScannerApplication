@@ -8,6 +8,8 @@ using OpenCvSharp;
 using System.Diagnostics;
 using System.Windows.Media;
 using System.Windows.Controls;
+using PdfSharp.Drawing.Layout;
+using Tesseract;
 
 namespace Ui
 {
@@ -116,7 +118,6 @@ namespace Ui
 
                 if (lastDetectedInnerRect != null && currentImage != null && !currentImage.Empty())
                 {
-                    // Cắt vùng bên trong hình vuông sáng nhạt
                     currentImage = new Mat(currentImage, lastDetectedInnerRect.Value);
                 }
 
@@ -135,23 +136,17 @@ namespace Ui
             videoCapture.Read(frame);
             if (frame.Empty()) return;
 
-            // Detect the paper region
             lastDetectedInnerRect = DetectInnerRectangle(frame);
 
-            // Create a copy of the frame for display purposes
             using Mat displayFrame = frame.Clone();
 
-            // Add the blue overlay only to the display frame
             if (lastDetectedInnerRect != null)
             {
-                Cv2.Rectangle(displayFrame, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1); // Light blue overlay
-                Cv2.AddWeighted(displayFrame, 0.5, frame, 0.5, 0, displayFrame); // Combine overlay with the original frame
+                Cv2.Rectangle(displayFrame, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1);
+                Cv2.AddWeighted(displayFrame, 0.5, frame, 0.5, 0, displayFrame);
             }
 
-            // Update the preview with the display frame
             ImgPreview.Source = BitmapSourceFromMat(displayFrame);
-
-            // Save the original frame (without overlay) for capturing
             currentImage = frame.Clone();
         }
 
@@ -180,11 +175,9 @@ namespace Ui
                     return;
                 }
 
-                // Mở cửa sổ AdjustImageWindow để chỉnh sửa vùng nhận diện
                 AdjustImageWindow adjustWindow = new AdjustImageWindow(selectedImage);
                 if (adjustWindow.ShowDialog() == true)
                 {
-                    // Nhận ảnh đã cắt từ AdjustImageWindow
                     currentImage = adjustWindow.CroppedImage;
                     if (currentImage != null && !currentImage.Empty())
                     {
@@ -211,7 +204,6 @@ namespace Ui
                 return;
             }
 
-            // Show the progress bar and status text
             ScanProgressBar.Visibility = Visibility.Visible;
             ScanStatusText.Visibility = Visibility.Visible;
             ScanProgressBar.Value = 0;
@@ -219,17 +211,12 @@ namespace Ui
 
             try
             {
-                // Simulate scanning process
                 await Task.Run(() =>
                 {
-                    // Divide the scanning process into steps
                     int totalSteps = 5;
                     for (int step = 1; step <= totalSteps; step++)
                     {
-                        // Simulate processing time for each step
                         Thread.Sleep(500);
-
-                        // Update progress (use Dispatcher to update UI from a background thread)
                         Dispatcher.Invoke(() =>
                         {
                             ScanProgressBar.Value = (step * 100) / totalSteps;
@@ -237,10 +224,7 @@ namespace Ui
                         });
                     }
 
-                    // Perform actual scanning logic (e.g., extracting text, signatures, seals)
                     using Mat scannedContent = ExtractContent(currentImage);
-
-                    // Update the preview with the scanned content
                     Dispatcher.Invoke(() =>
                     {
                         if (!scannedContent.Empty())
@@ -262,8 +246,7 @@ namespace Ui
             }
             finally
             {
-                // Hide the progress bar after scanning
-                await Task.Delay(1000); // Delay to let the user see the final status
+                await Task.Delay(1000);
                 ScanProgressBar.Visibility = Visibility.Collapsed;
                 ScanStatusText.Visibility = Visibility.Collapsed;
             }
@@ -277,7 +260,6 @@ namespace Ui
                 return;
             }
 
-            // Show the progress bar and status text
             ScanProgressBar.Visibility = Visibility.Visible;
             ScanStatusText.Visibility = Visibility.Visible;
             ScanProgressBar.Value = 0;
@@ -285,17 +267,12 @@ namespace Ui
 
             try
             {
-                // Simulate scanning process
                 await Task.Run(() =>
                 {
-                    // Divide the scanning process into steps
                     int totalSteps = 5;
                     for (int step = 1; step <= totalSteps; step++)
                     {
-                        // Simulate processing time for each step
                         Thread.Sleep(500);
-
-                        // Update progress (use Dispatcher to update UI from a background thread)
                         Dispatcher.Invoke(() =>
                         {
                             ScanProgressBar.Value = (step * 100) / totalSteps;
@@ -303,10 +280,7 @@ namespace Ui
                         });
                     }
 
-                    // Perform actual scanning logic (e.g., extracting text, signatures, seals)
                     using Mat scannedContent = ExtractContent(currentImage);
-
-                    // Update the preview with the scanned content
                     Dispatcher.Invoke(() =>
                     {
                         if (!scannedContent.Empty())
@@ -328,8 +302,7 @@ namespace Ui
             }
             finally
             {
-                // Hide the progress bar after scanning
-                await Task.Delay(1000); // Delay to let the user see the final status
+                await Task.Delay(1000);
                 ScanProgressBar.Visibility = Visibility.Collapsed;
                 ScanStatusText.Visibility = Visibility.Collapsed;
             }
@@ -343,20 +316,16 @@ namespace Ui
 
         private Mat ExtractContent(Mat inputImage)
         {
-            // Convert the image to grayscale
             Mat gray = new();
             Cv2.CvtColor(inputImage, gray, ColorConversionCodes.BGR2GRAY);
 
-            // Apply adaptive thresholding to isolate content
             Mat binary = new();
             Cv2.AdaptiveThreshold(gray, binary, 255, AdaptiveThresholdTypes.MeanC, ThresholdTypes.Binary, 15, 5);
 
-            // Find contours to detect the content area
             OpenCvSharp.Point[][] contours;
             HierarchyIndex[] hierarchy;
             Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
-            // Merge all contours to create a bounding box
             OpenCvSharp.Rect? contentRect = null;
             foreach (var contour in contours)
             {
@@ -364,10 +333,9 @@ namespace Ui
                 contentRect = contentRect.HasValue ? contentRect.Value.Union(rect) : rect;
             }
 
-            // Expand the bounding box slightly to avoid cutting off content
             if (contentRect != null)
             {
-                int padding = 10; // Add padding around the content
+                int padding = 10;
                 contentRect = new OpenCvSharp.Rect(
                     Math.Max(0, contentRect.Value.X - padding),
                     Math.Max(0, contentRect.Value.Y - padding),
@@ -381,7 +349,6 @@ namespace Ui
                 return content;
             }
 
-            // If no content is detected, return an empty Mat
             gray.Dispose();
             binary.Dispose();
             return new Mat();
@@ -391,14 +358,14 @@ namespace Ui
         {
             if (currentImage == null || currentImage.Empty())
             {
-                MessageBox.Show("No image to add. Please select or capture an image first.");
+                MessageBox.Show("No image to process. Please select or capture an image first.");
                 return;
             }
 
             SaveFileDialog saveFileDialog = new()
             {
                 Filter = "PDF files (*.pdf)|*.pdf",
-                FileName = "ScannedDocumentWithImage.pdf"
+                FileName = "ScannedDocument.pdf"
             };
 
             if (saveFileDialog.ShowDialog() == true)
@@ -413,17 +380,21 @@ namespace Ui
                         return;
                     }
 
-                    using Mat paperRegion = currentImage; // Đã được cắt từ AdjustImageWindow
-                    if (paperRegion.Empty())
+                    // Process the image to enhance quality
+                    using Mat processedImage = ProcessImage(currentImage);
+                    // Extract inner content, excluding paper borders
+                    using Mat contentImage = ExtractInnerContent(processedImage);
+                    if (contentImage.Empty())
                     {
-                        MessageBox.Show("Could not detect paper region in the image.");
+                        MessageBox.Show("Could not detect content in the image.");
                         TxtStatus.Text = "PDF export failed.";
                         return;
                     }
 
-                    using Mat processedImage = ProcessImage(paperRegion);
-                    using Mat imageWithWhiteBackground = PlaceOnWhiteBackground(processedImage);
+                    // Place the content image on a white background
+                    using Mat finalImage = PlaceOnWhiteBackground(contentImage);
 
+                    // Create PDF with the content image
                     using var document = new PdfDocument();
                     var page = document.AddPage();
                     page.Width = 595;
@@ -431,27 +402,25 @@ namespace Ui
 
                     using (var gfx = XGraphics.FromPdfPage(page))
                     {
-                        using (MemoryStream imageStream = new())
-                        {
-                            imageWithWhiteBackground.WriteToStream(imageStream, ".png");
-                            imageStream.Position = 0;
-                            XImage xImage = XImage.FromStream(imageStream);
+                        using MemoryStream imageStream = new();
+                        finalImage.WriteToStream(imageStream, ".png");
+                        imageStream.Position = 0;
+                        XImage xImage = XImage.FromStream(imageStream);
 
-                            double imgWidth = imageWithWhiteBackground.Width;
-                            double imgHeight = imageWithWhiteBackground.Height;
-                            double scale = Math.Min((page.Width - 40) / imgWidth, (page.Height - 40) / imgHeight);
-                            imgWidth *= scale;
-                            imgHeight *= scale;
+                        double imgWidth = finalImage.Width;
+                        double imgHeight = finalImage.Height;
+                        double scale = Math.Min((page.Width - 40) / imgWidth, (page.Height - 40) / imgHeight);
+                        imgWidth *= scale;
+                        imgHeight *= scale;
 
-                            double xPosition = (page.Width - imgWidth) / 2;
-                            double yPosition = (page.Height - imgHeight) / 2;
+                        double xPosition = (page.Width - imgWidth) / 2;
+                        double yPosition = (page.Height - imgHeight) / 2;
 
-                            gfx.DrawImage(xImage, xPosition, yPosition, imgWidth, imgHeight);
-                        }
+                        gfx.DrawImage(xImage, xPosition, yPosition, imgWidth, imgHeight);
                     }
 
                     document.Save(saveFileDialog.FileName);
-                    TxtStatus.Text = "PDF with image on white background exported successfully.";
+                    TxtStatus.Text = "PDF with scanned content image exported successfully.";
                 }
                 catch (Exception ex)
                 {
@@ -471,75 +440,82 @@ namespace Ui
         {
             Mat processed = inputImage.Clone();
 
-            // Loại bỏ bóng bằng bộ lọc song phương
+            // Apply bilateral filter to reduce noise while preserving edges
             Mat bilateral = new();
             Cv2.BilateralFilter(processed, bilateral, 11, 17, 17);
 
-            // Tách thành các kênh màu BGR
-            Mat[] channels = Cv2.Split(bilateral);
+            // Convert to grayscale for thresholding
+            Mat gray = new();
+            Cv2.CvtColor(bilateral, gray, ColorConversionCodes.BGR2GRAY);
 
-            // Tăng độ tương phản trên từng kênh
-            for (int i = 0; i < channels.Length; i++)
+            // Apply adaptive thresholding to make text darker and more distinct
+            Mat binary = new();
+            Cv2.AdaptiveThreshold(gray, binary, 255, AdaptiveThresholdTypes.MeanC, ThresholdTypes.Binary, 15, 10);
+
+            // Merge binary image back to color image to retain color for signatures/seals
+            Mat[] channels = new Mat[3];
+            for (int i = 0; i < 3; i++)
             {
-                Cv2.Normalize(channels[i], channels[i], 0, 255, NormTypes.MinMax);
+                channels[i] = binary.Clone();
             }
+            Cv2.Merge(channels, processed);
 
-            // Tăng độ sắc nét trên từng kênh
-            Mat[] sharpenedChannels = new Mat[channels.Length];
-            for (int i = 0; i < channels.Length; i++)
+            // Enhance contrast and sharpness
+            Mat[] splitChannels = Cv2.Split(processed);
+            for (int i = 0; i < splitChannels.Length; i++)
             {
+                // Normalize to increase contrast
+                Cv2.Normalize(splitChannels[i], splitChannels[i], 0, 255, NormTypes.MinMax);
+
+                // Sharpen using Laplacian
                 Mat sharpened = new();
-                Cv2.Laplacian(channels[i], sharpened, MatType.CV_16S);
+                Cv2.Laplacian(splitChannels[i], sharpened, MatType.CV_16S);
                 Mat sharpened8bit = new();
                 Cv2.ConvertScaleAbs(sharpened, sharpened8bit);
-                Cv2.AddWeighted(channels[i], 1.8, sharpened8bit, -0.6, 0, channels[i]);
-                sharpenedChannels[i] = channels[i];
+                Cv2.AddWeighted(splitChannels[i], 1.8, sharpened8bit, -0.6, 0, splitChannels[i]);
+
+                // Increase brightness slightly
+                Cv2.ConvertScaleAbs(splitChannels[i], splitChannels[i], 1.1, 10);
+
                 sharpened.Dispose();
                 sharpened8bit.Dispose();
             }
 
-            // Điều chỉnh độ sáng để làm nổi bật chữ và con dấu
-            for (int i = 0; i < channels.Length; i++)
+            Cv2.Merge(splitChannels, processed);
+
+            // Clean up
+            foreach (var channel in splitChannels)
             {
-                Cv2.ConvertScaleAbs(channels[i], channels[i], 1.2, 15);
+                channel.Dispose();
             }
-
-            // Gộp các kênh lại thành ảnh màu
-            Cv2.Merge(channels, processed);
-
-            // Giải phóng tài nguyên
             foreach (var channel in channels)
             {
                 channel.Dispose();
             }
             bilateral.Dispose();
+            gray.Dispose();
+            binary.Dispose();
 
             return processed;
         }
 
         private static Mat PlaceOnWhiteBackground(Mat inputImage)
         {
-            // Kích thước nền trắng (A4 ở 300 DPI)
-            int backgroundWidth = 2480; // 8.27 inch * 300 DPI
-            int backgroundHeight = 3508; // 11.69 inch * 300 DPI
+            int backgroundWidth = 2480;
+            int backgroundHeight = 3508;
 
-            // Tạo hình ảnh nền trắng
             Mat background = new(backgroundHeight, backgroundWidth, MatType.CV_8UC3, new Scalar(255, 255, 255));
 
-            // Tính toán tỷ lệ để giữ nguyên tỷ lệ khung hình của hình ảnh gốc
             double scale = Math.Min((double)(backgroundWidth - 80) / inputImage.Width, (double)(backgroundHeight - 80) / inputImage.Height);
             int newWidth = (int)(inputImage.Width * scale);
             int newHeight = (int)(inputImage.Height * scale);
 
-            // Thay đổi kích thước hình ảnh gốc
             Mat resizedImage = new();
             Cv2.Resize(inputImage, resizedImage, new OpenCvSharp.Size(newWidth, newHeight));
 
-            // Tính vị trí để đặt hình ảnh vào giữa nền trắng
             int xOffset = (backgroundWidth - newWidth) / 2;
             int yOffset = (backgroundHeight - newHeight) / 2;
 
-            // Đặt hình ảnh vào giữa nền trắng
             OpenCvSharp.Rect roi = new(xOffset, yOffset, newWidth, newHeight);
             resizedImage.CopyTo(new Mat(background, roi));
 
@@ -560,56 +536,87 @@ namespace Ui
             bitmapImage.Freeze();
             return bitmapImage;
         }
+
         private OpenCvSharp.Rect? DetectInnerRectangle(Mat inputImage)
         {
             Mat processed = inputImage.Clone();
-
-            // Convert to HSV color space
             Mat hsv = new();
             Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
-
-            // Create a mask for bright regions (typically white paper)
             Mat mask = new();
-            Cv2.InRange(hsv, new Scalar(0, 0, 200), new Scalar(180, 30, 255), mask); // Adjusted HSV range for better paper detection
-
-            // Smooth the mask to reduce noise
+            Cv2.InRange(hsv, new Scalar(0, 0, 200), new Scalar(180, 30, 255), mask);
             Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(5, 5), 0);
-
-            // Apply morphological operations to clean up the mask
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
             Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 2);
-
-            // Find the largest contour (assumed to be the paper)
             OpenCvSharp.Point[][] contours;
             HierarchyIndex[] hierarchy;
             Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
-
             double maxArea = 0;
             OpenCvSharp.Rect? paperRect = null;
             foreach (var contour in contours)
             {
                 double area = Cv2.ContourArea(contour);
-                if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.1)) // Reduced threshold for smaller papers
+                if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.1))
                 {
                     maxArea = area;
                     paperRect = Cv2.BoundingRect(contour);
                 }
             }
-
             hsv.Dispose();
             mask.Dispose();
             kernel.Dispose();
             processed.Dispose();
-
             if (paperRect == null) return null;
-
-            // Ensure the region does not exceed image bounds
             int newX = Math.Max(0, paperRect.Value.X);
             int newY = Math.Max(0, paperRect.Value.Y);
             int newWidth = Math.Min(inputImage.Width - newX, paperRect.Value.Width);
             int newHeight = Math.Min(inputImage.Height - newY, paperRect.Value.Height);
-
             return new OpenCvSharp.Rect(newX, newY, newWidth, newHeight);
+        }
+
+        private Mat ExtractInnerContent(Mat inputImage)
+        {
+            Mat gray = new();
+            Cv2.CvtColor(inputImage, gray, ColorConversionCodes.BGR2GRAY);
+
+            Mat binary = new();
+            Cv2.AdaptiveThreshold(gray, binary, 255, AdaptiveThresholdTypes.MeanC, ThresholdTypes.Binary, 15, 5);
+
+            OpenCvSharp.Point[][] contours;
+            HierarchyIndex[] hierarchy;
+            Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
+
+            OpenCvSharp.Rect? contentRect = null;
+            foreach (var contour in contours)
+            {
+                double area = Cv2.ContourArea(contour);
+                if (area > 1000) // Filter small noise contours
+                {
+                    OpenCvSharp.Rect rect = Cv2.BoundingRect(contour);
+                    contentRect = contentRect.HasValue ? contentRect.Value.Union(rect) : rect;
+                }
+            }
+
+            if (contentRect != null)
+            {
+                // Increase border margin to exclude paper edges and lighting artifacts
+                int borderMargin = 30;
+                int newX = Math.Max(contentRect.Value.X + borderMargin, 0);
+                int newY = Math.Max(contentRect.Value.Y + borderMargin, 0);
+                int newWidth = Math.Min(contentRect.Value.Width - 2 * borderMargin, inputImage.Width - newX);
+                int newHeight = Math.Min(contentRect.Value.Height - 2 * borderMargin, inputImage.Height - newY);
+
+                if (newWidth > 0 && newHeight > 0)
+                {
+                    Mat content = new(inputImage, new OpenCvSharp.Rect(newX, newY, newWidth, newHeight));
+                    gray.Dispose();
+                    binary.Dispose();
+                    return content;
+                }
+            }
+
+            gray.Dispose();
+            binary.Dispose();
+            return new Mat();
         }
     }
 }
