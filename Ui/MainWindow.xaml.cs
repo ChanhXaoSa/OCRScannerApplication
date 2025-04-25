@@ -542,34 +542,52 @@ namespace Ui
             Mat processed = inputImage.Clone();
             Mat hsv = new();
             Cv2.CvtColor(processed, hsv, ColorConversionCodes.BGR2HSV);
+
+            // Adjust HSV range to better detect white paper
             Mat mask = new();
-            Cv2.InRange(hsv, new Scalar(0, 0, 200), new Scalar(180, 30, 255), mask);
-            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(5, 5), 0);
-            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
-            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 2);
+            Cv2.InRange(hsv, new Scalar(0, 0, 180), new Scalar(180, 40, 255), mask);
+
+            // Apply stronger Gaussian blur to reduce noise
+            Cv2.GaussianBlur(mask, mask, new OpenCvSharp.Size(9, 9), 0);
+
+            // Apply morphological operations to close gaps and clean up
+            Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(7, 7));
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 3);
+            Cv2.MorphologyEx(mask, mask, MorphTypes.Open, kernel, iterations: 2);
+
+            // Find contours
             OpenCvSharp.Point[][] contours;
             HierarchyIndex[] hierarchy;
             Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
             double maxArea = 0;
             OpenCvSharp.Rect? paperRect = null;
             foreach (var contour in contours)
             {
                 double area = Cv2.ContourArea(contour);
-                if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.1))
+                if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.15))
                 {
                     maxArea = area;
                     paperRect = Cv2.BoundingRect(contour);
                 }
             }
+
             hsv.Dispose();
             mask.Dispose();
             kernel.Dispose();
             processed.Dispose();
+
             if (paperRect == null) return null;
-            int newX = Math.Max(0, paperRect.Value.X);
-            int newY = Math.Max(0, paperRect.Value.Y);
-            int newWidth = Math.Min(inputImage.Width - newX, paperRect.Value.Width);
-            int newHeight = Math.Min(inputImage.Height - newY, paperRect.Value.Height);
+
+            // Shrink the rectangle to ensure it lies completely inside the paper
+            int margin = 15; // Margin to avoid paper edges
+            int newX = Math.Max(0, paperRect.Value.X + margin);
+            int newY = Math.Max(0, paperRect.Value.Y + margin);
+            int newWidth = Math.Min(inputImage.Width - newX, paperRect.Value.Width - 2 * margin);
+            int newHeight = Math.Min(inputImage.Height - newY, paperRect.Value.Height - 2 * margin);
+
+            if (newWidth <= 0 || newHeight <= 0) return null;
+
             return new OpenCvSharp.Rect(newX, newY, newWidth, newHeight);
         }
 
