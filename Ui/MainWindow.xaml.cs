@@ -18,7 +18,7 @@ namespace Ui
         private VideoCapture? videoCapture;
         private Mat? currentImage;
         private List<int> availableWebcamIndices = [];
-        private OpenCvSharp.Rect? lastDetectedInnerRect;
+        private OpenCvSharp.Point[]? lastDetectedInnerRect;
 
         public MainWindow()
         {
@@ -118,7 +118,17 @@ namespace Ui
 
                 if (lastDetectedInnerRect != null && currentImage != null && !currentImage.Empty())
                 {
-                    currentImage = new Mat(currentImage, lastDetectedInnerRect.Value);
+                    // Tạo mặt nạ cho tứ giác
+                    Mat mask = new Mat(currentImage.Size(), MatType.CV_8UC1, Scalar.Black);
+                    Cv2.FillPoly(mask, new[] { lastDetectedInnerRect }, Scalar.White);
+                    // Áp dụng mặt nạ để cắt vùng tứ giác
+                    Mat cropped = new Mat(currentImage.Size(), currentImage.Type());
+                    Cv2.BitwiseAnd(currentImage, currentImage, cropped, mask);
+                    // Cắt hình chữ nhật bao quanh tứ giác để loại bỏ phần thừa
+                    OpenCvSharp.Rect boundingRect = Cv2.BoundingRect(lastDetectedInnerRect);
+                    currentImage = new Mat(cropped, boundingRect);
+                    mask.Dispose();
+                    cropped.Dispose();
                 }
 
                 BtnCaptureWebcam.Content = "Capture from Webcam";
@@ -142,20 +152,13 @@ namespace Ui
 
             if (lastDetectedInnerRect != null)
             {
-                Cv2.Rectangle(displayFrame, lastDetectedInnerRect.Value, new Scalar(255, 255, 200, 128), -1);
+                Cv2.FillPoly(displayFrame, new[] { lastDetectedInnerRect }, new Scalar(255, 255, 200, 128));
                 Cv2.AddWeighted(displayFrame, 0.5, frame, 0.5, 0, displayFrame);
+                Cv2.Polylines(displayFrame, new[] { lastDetectedInnerRect }, true, new Scalar(0, 255, 0), 2);
             }
 
             ImgPreview.Source = BitmapSourceFromMat(displayFrame);
             currentImage = frame.Clone();
-        }
-
-        private Mat CropPaperRegion(Mat inputImage)
-        {
-            OpenCvSharp.Rect? innerRect = DetectInnerRectangle(inputImage);
-            if (innerRect == null) return new Mat();
-
-            return new Mat(inputImage, innerRect.Value);
         }
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
@@ -537,7 +540,7 @@ namespace Ui
             return bitmapImage;
         }
 
-        private OpenCvSharp.Rect? DetectInnerRectangle(Mat inputImage)
+        private OpenCvSharp.Point[]? DetectInnerRectangle(Mat inputImage)
         {
             Mat processed = inputImage.Clone();
             Mat hsv = new();
@@ -560,15 +563,23 @@ namespace Ui
             HierarchyIndex[] hierarchy;
             Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
+            //tim duong vien lon nhat
             double maxArea = 0;
-            OpenCvSharp.Rect? paperRect = null;
+            OpenCvSharp.Point[]? paperQuad = null;
             foreach (var contour in contours)
             {
                 double area = Cv2.ContourArea(contour);
                 if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.15))
                 {
-                    maxArea = area;
-                    paperRect = Cv2.BoundingRect(contour);
+                    // Xấp xỉ đường viền thành đa giác
+                    double peri = Cv2.ArcLength(contour, true);
+                    OpenCvSharp.Point[] approx = Cv2.ApproxPolyDP(contour, 0.02 * peri, true);
+                    // Kiểm tra nếu đa giác có 4 đỉnh (tứ giác)
+                    if (approx.Length == 4)
+                    {
+                        maxArea = area;
+                        paperQuad = approx;
+                    }
                 }
             }
 
@@ -577,18 +588,26 @@ namespace Ui
             kernel.Dispose();
             processed.Dispose();
 
-            if (paperRect == null) return null;
-
-            // Shrink the rectangle to ensure it lies completely inside the paper
-            int margin = 15; // Margin to avoid paper edges
-            int newX = Math.Max(0, paperRect.Value.X + margin);
-            int newY = Math.Max(0, paperRect.Value.Y + margin);
-            int newWidth = Math.Min(inputImage.Width - newX, paperRect.Value.Width - 2 * margin);
-            int newHeight = Math.Min(inputImage.Height - newY, paperRect.Value.Height - 2 * margin);
-
-            if (newWidth <= 0 || newHeight <= 0) return null;
-
-            return new OpenCvSharp.Rect(newX, newY, newWidth, newHeight);
+            if (paperQuad == null) return null;
+            // Tính tâm của tứ giác
+            OpenCvSharp.Point center = new OpenCvSharp.Point(
+                (paperQuad[0].X + paperQuad[1].X + paperQuad[2].X + paperQuad[3].X) / 4,
+                (paperQuad[0].Y + paperQuad[1].Y + paperQuad[2].Y + paperQuad[3].Y) / 4
+            );
+            // Thu nhỏ tứ giác bằng cách di chuyển các đỉnh về phía tâm
+            float shrinkFactor = 0.9f; // Thu nhỏ 10%
+            OpenCvSharp.Point[] shrunkQuad = new OpenCvSharp.Point[4];
+            for (int i = 0; i < 4; i++)
+            {
+                shrunkQuad[i] = new OpenCvSharp.Point(
+                    (int)(center.X + shrinkFactor * (paperQuad[i].X - center.X)),
+                    (int)(center.Y + shrinkFactor * (paperQuad[i].Y - center.Y))
+                );
+                // Đảm bảo đỉnh nằm trong giới hạn hình ảnh
+                shrunkQuad[i].X = Math.Max(0, Math.Min(inputImage.Width - 1, shrunkQuad[i].X));
+                shrunkQuad[i].Y = Math.Max(0, Math.Min(inputImage.Height - 1, shrunkQuad[i].Y));
+            }
+            return shrunkQuad;
         }
 
         private Mat ExtractInnerContent(Mat inputImage)
