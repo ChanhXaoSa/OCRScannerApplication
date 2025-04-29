@@ -19,6 +19,11 @@ namespace Ui
         private Mat? currentImage;
         private List<int> availableWebcamIndices = [];
         private OpenCvSharp.Point[]? lastDetectedInnerRect;
+        private OpenCvSharp.Point[]? previousDetectedQuad = null;
+        private DateTime? stableStartTime = null;
+        private const double StabilityThreshold = 10.0;
+        private const double StableDuration = 3.0;
+        private bool isAutoCapturing = false; 
 
         public MainWindow()
         {
@@ -105,6 +110,9 @@ namespace Ui
             videoCapture.Set(VideoCaptureProperties.FrameHeight, 720);
 
             CompositionTarget.Rendering += RenderWebcamFrame;
+            isAutoCapturing = false;
+            stableStartTime = null;
+            previousDetectedQuad = null;
         }
 
         private void BtnCaptureFrame_Click(object sender, RoutedEventArgs e)
@@ -118,33 +126,55 @@ namespace Ui
 
                 if (lastDetectedInnerRect != null && currentImage != null && !currentImage.Empty())
                 {
-                    // Tạo mặt nạ cho tứ giác
-                    Mat mask = new Mat(currentImage.Size(), MatType.CV_8UC1, Scalar.Black);
-                    Cv2.FillPoly(mask, new[] { lastDetectedInnerRect }, Scalar.White);
-                    // Áp dụng mặt nạ để cắt vùng tứ giác
-                    Mat cropped = new Mat(currentImage.Size(), currentImage.Type());
-                    Cv2.BitwiseAnd(currentImage, currentImage, cropped, mask);
-                    // Cắt hình chữ nhật bao quanh tứ giác để loại bỏ phần thừa
-                    OpenCvSharp.Rect boundingRect = Cv2.BoundingRect(lastDetectedInnerRect);
-                    currentImage = new Mat(cropped, boundingRect);
-                    mask.Dispose();
-                    cropped.Dispose();
+                    try
+                    {
+                        // Sử dụng biến đổi phối cảnh để cắt và chuẩn hóa tứ giác
+                        Mat finalCropped = CropAndWarpPerspective(currentImage, lastDetectedInnerRect);
+
+                        if (!finalCropped.Empty())
+                        {
+                            currentImage.Dispose(); // Giải phóng currentImage cũ
+                            currentImage = finalCropped; // Gán currentImage mới
+                            ImgPreview.Source = BitmapSourceFromMat(currentImage); // Cập nhật hiển thị
+                        }
+                        else
+                        {
+                            TxtStatus.Text = "Failed to crop and warp the image.";
+                            MessageBox.Show("Failed to crop and warp the detected region.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TxtStatus.Text = "Error during image cropping.";
+                        MessageBox.Show($"Cropping error: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    TxtStatus.Text = "No valid region detected for cropping.";
+                    MessageBox.Show("No valid region detected. The entire image will be used.");
                 }
 
                 BtnCaptureWebcam.Content = "Capture from Webcam";
                 BtnCaptureWebcam.Click -= BtnCaptureFrame_Click;
                 BtnCaptureWebcam.Click += BtnCaptureWebcam_Click;
                 TxtStatus.Text = "Image captured and cropped from webcam.";
+                isAutoCapturing = false;
+                stableStartTime = null;
+                previousDetectedQuad = null;
             }
         }
 
         private void RenderWebcamFrame(object? sender, EventArgs e)
         {
-            if (videoCapture == null || !videoCapture.IsOpened()) return;
+            if (videoCapture == null || !videoCapture.IsOpened() || isAutoCapturing) return;
 
             using Mat frame = new();
             videoCapture.Read(frame);
             if (frame.Empty()) return;
+
+            currentImage?.Dispose();
+            currentImage = frame.Clone();
 
             lastDetectedInnerRect = DetectInnerRectangle(frame);
 
@@ -155,10 +185,41 @@ namespace Ui
                 Cv2.FillPoly(displayFrame, new[] { lastDetectedInnerRect }, new Scalar(255, 255, 200, 128));
                 Cv2.AddWeighted(displayFrame, 0.5, frame, 0.5, 0, displayFrame);
                 Cv2.Polylines(displayFrame, new[] { lastDetectedInnerRect }, true, new Scalar(0, 255, 0), 2);
+
+                if (IsQuadStable(lastDetectedInnerRect, previousDetectedQuad))
+                {
+                    if (stableStartTime == null)
+                    {
+                        stableStartTime = DateTime.Now;
+                        Dispatcher.Invoke(() => TxtStatus.Text = "Detecting stable frame...");
+                    }
+                    else if ((DateTime.Now - stableStartTime.Value).TotalSeconds >= StableDuration)
+                    {
+                        // Tự động chụp
+                        isAutoCapturing = true;
+                        Dispatcher.Invoke(() =>
+                        {
+                            BtnCaptureFrame_Click(null, new RoutedEventArgs());
+                            TxtStatus.Text = "Frame captured automatically.";
+                        });
+                    }
+                }
+                else
+                {
+                    stableStartTime = null;
+                    Dispatcher.Invoke(() => TxtStatus.Text = "Webcam running. Waiting for stable frame...");
+                }
+
+                previousDetectedQuad = lastDetectedInnerRect;
+            }
+            else
+            {
+                stableStartTime = null;
+                previousDetectedQuad = null;
+                Dispatcher.Invoke(() => TxtStatus.Text = "No paper detected.");
             }
 
             ImgPreview.Source = BitmapSourceFromMat(displayFrame);
-            currentImage = frame.Clone();
         }
 
         private void BtnSelectImage_Click(object sender, RoutedEventArgs e)
@@ -571,10 +632,8 @@ namespace Ui
                 double area = Cv2.ContourArea(contour);
                 if (area > maxArea && area > (inputImage.Width * inputImage.Height * 0.15))
                 {
-                    // Xấp xỉ đường viền thành đa giác
                     double peri = Cv2.ArcLength(contour, true);
                     OpenCvSharp.Point[] approx = Cv2.ApproxPolyDP(contour, 0.02 * peri, true);
-                    // Kiểm tra nếu đa giác có 4 đỉnh (tứ giác)
                     if (approx.Length == 4)
                     {
                         maxArea = area;
@@ -589,13 +648,12 @@ namespace Ui
             processed.Dispose();
 
             if (paperQuad == null) return null;
-            // Tính tâm của tứ giác
             OpenCvSharp.Point center = new OpenCvSharp.Point(
                 (paperQuad[0].X + paperQuad[1].X + paperQuad[2].X + paperQuad[3].X) / 4,
                 (paperQuad[0].Y + paperQuad[1].Y + paperQuad[2].Y + paperQuad[3].Y) / 4
             );
-            // Thu nhỏ tứ giác bằng cách di chuyển các đỉnh về phía tâm
-            float shrinkFactor = 0.9f; // Thu nhỏ 10%
+            //thu nho de khong bi ra ngoai to giay
+            float shrinkFactor = 0.975f;
             OpenCvSharp.Point[] shrunkQuad = new OpenCvSharp.Point[4];
             for (int i = 0; i < 4; i++)
             {
@@ -603,57 +661,114 @@ namespace Ui
                     (int)(center.X + shrinkFactor * (paperQuad[i].X - center.X)),
                     (int)(center.Y + shrinkFactor * (paperQuad[i].Y - center.Y))
                 );
-                // Đảm bảo đỉnh nằm trong giới hạn hình ảnh
                 shrunkQuad[i].X = Math.Max(0, Math.Min(inputImage.Width - 1, shrunkQuad[i].X));
                 shrunkQuad[i].Y = Math.Max(0, Math.Min(inputImage.Height - 1, shrunkQuad[i].Y));
             }
             return shrunkQuad;
         }
 
+        private bool IsQuadStable(OpenCvSharp.Point[]? currentQuad, OpenCvSharp.Point[]? previousQuad)
+        {
+            if (currentQuad == null || previousQuad == null || currentQuad.Length != 4 || previousQuad.Length != 4)
+                return false;
+
+            double maxDistance = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                double dx = currentQuad[i].X - previousQuad[i].X;
+                double dy = currentQuad[i].Y - previousQuad[i].Y;
+                double distance = Math.Sqrt(dx * dx + dy * dy);
+                maxDistance = Math.Max(maxDistance, distance);
+            }
+
+            return maxDistance < StabilityThreshold;
+        }
+
         private Mat ExtractInnerContent(Mat inputImage)
         {
-            Mat gray = new();
-            Cv2.CvtColor(inputImage, gray, ColorConversionCodes.BGR2GRAY);
-
-            Mat binary = new();
-            Cv2.AdaptiveThreshold(gray, binary, 255, AdaptiveThresholdTypes.MeanC, ThresholdTypes.Binary, 15, 5);
-
-            OpenCvSharp.Point[][] contours;
-            HierarchyIndex[] hierarchy;
-            Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
-
-            OpenCvSharp.Rect? contentRect = null;
-            foreach (var contour in contours)
+            if (inputImage.Empty())
             {
-                double area = Cv2.ContourArea(contour);
-                if (area > 1000) // Filter small noise contours
-                {
-                    OpenCvSharp.Rect rect = Cv2.BoundingRect(contour);
-                    contentRect = contentRect.HasValue ? contentRect.Value.Union(rect) : rect;
-                }
+                return new Mat();
             }
 
-            if (contentRect != null)
-            {
-                // Increase border margin to exclude paper edges and lighting artifacts
-                int borderMargin = 30;
-                int newX = Math.Max(contentRect.Value.X + borderMargin, 0);
-                int newY = Math.Max(contentRect.Value.Y + borderMargin, 0);
-                int newWidth = Math.Min(contentRect.Value.Width - 2 * borderMargin, inputImage.Width - newX);
-                int newHeight = Math.Min(contentRect.Value.Height - 2 * borderMargin, inputImage.Height - newY);
+            int borderMargin = 10;
+            int newX = Math.Max(borderMargin, 0);
+            int newY = Math.Max(borderMargin, 0);
+            int newWidth = inputImage.Width - 2 * borderMargin;
+            int newHeight = inputImage.Height - 2 * borderMargin;
 
-                if (newWidth > 0 && newHeight > 0)
-                {
-                    Mat content = new(inputImage, new OpenCvSharp.Rect(newX, newY, newWidth, newHeight));
-                    gray.Dispose();
-                    binary.Dispose();
-                    return content;
-                }
+            if (newWidth > 0 && newHeight > 0)
+            {
+                OpenCvSharp.Rect contentRect = new(newX, newY, newWidth, newHeight);
+                Mat content = new(inputImage, contentRect);
+                return content;
             }
 
-            gray.Dispose();
-            binary.Dispose();
-            return new Mat();
+            return inputImage.Clone();
+        }
+
+        private Mat CropAndWarpPerspective(Mat inputImage, OpenCvSharp.Point[] quad)
+        {
+            if (quad == null || quad.Length != 4)
+            {
+                throw new ArgumentException("Quad must have exactly 4 points.");
+            }
+
+            // Sắp xếp các điểm của tứ giác theo thứ tự: top-left, top-right, bottom-right, bottom-left
+            OpenCvSharp.Point[] sortedQuad = SortQuadPoints(quad);
+
+            // Xác định kích thước đầu ra (hình chữ nhật)
+            double widthTop = Math.Sqrt(Math.Pow(sortedQuad[1].X - sortedQuad[0].X, 2) + Math.Pow(sortedQuad[1].Y - sortedQuad[0].Y, 2));
+            double widthBottom = Math.Sqrt(Math.Pow(sortedQuad[2].X - sortedQuad[3].X, 2) + Math.Pow(sortedQuad[2].Y - sortedQuad[3].Y, 2));
+            double heightLeft = Math.Sqrt(Math.Pow(sortedQuad[3].X - sortedQuad[0].X, 2) + Math.Pow(sortedQuad[3].Y - sortedQuad[0].Y, 2));
+            double heightRight = Math.Sqrt(Math.Pow(sortedQuad[2].X - sortedQuad[1].X, 2) + Math.Pow(sortedQuad[2].Y - sortedQuad[1].Y, 2));
+
+            int outputWidth = (int)Math.Max(widthTop, widthBottom);
+            int outputHeight = (int)Math.Max(heightLeft, heightRight);
+
+            // Định nghĩa các điểm đích (hình chữ nhật)
+            OpenCvSharp.Point2f[] dstPoints = new OpenCvSharp.Point2f[]
+            {
+        new OpenCvSharp.Point2f(0, 0),
+        new OpenCvSharp.Point2f(outputWidth - 1, 0),
+        new OpenCvSharp.Point2f(outputWidth - 1, outputHeight - 1),
+        new OpenCvSharp.Point2f(0, outputHeight - 1)
+            };
+
+            // Định nghĩa các điểm nguồn (tứ giác)
+            OpenCvSharp.Point2f[] srcPoints = Array.ConvertAll(sortedQuad, p => new OpenCvSharp.Point2f(p.X, p.Y));
+
+            // Tính ma trận biến đổi phối cảnh
+            Mat perspectiveMatrix = Cv2.GetPerspectiveTransform(srcPoints, dstPoints);
+
+            // Áp dụng biến đổi phối cảnh
+            Mat outputImage = new Mat();
+            Cv2.WarpPerspective(inputImage, outputImage, perspectiveMatrix, new OpenCvSharp.Size(outputWidth, outputHeight));
+
+            perspectiveMatrix.Dispose();
+            return outputImage;
+        }
+
+        // Hàm phụ để sắp xếp các điểm tứ giác theo thứ tự: top-left, top-right, bottom-right, bottom-left
+        private OpenCvSharp.Point[] SortQuadPoints(OpenCvSharp.Point[] quad)
+        {
+            // Sắp xếp dựa trên tọa độ
+            OpenCvSharp.Point[] sorted = new OpenCvSharp.Point[4];
+
+            // Tìm top-left (tổng x+y nhỏ nhất)
+            sorted[0] = quad.OrderBy(p => p.X + p.Y).First();
+            // Tìm bottom-right (tổng x+y lớn nhất)
+            sorted[2] = quad.OrderByDescending(p => p.X + p.Y).First();
+            // Tìm top-right (x lớn nhất, y nhỏ)
+            sorted[1] = quad.OrderByDescending(p => p.X).ThenBy(p => p.Y).First();
+            // Tìm bottom-left (x nhỏ, y lớn)
+            sorted[3] = quad.OrderBy(p => p.X).ThenByDescending(p => p.Y).First();
+
+            // Xử lý trường hợp các điểm bị trùng hoặc không đúng thứ tự
+            if (sorted[1] == sorted[2]) sorted[1] = quad.Except(new[] { sorted[0], sorted[2], sorted[3] }).First();
+            if (sorted[3] == sorted[2]) sorted[3] = quad.Except(new[] { sorted[0], sorted[1], sorted[2] }).First();
+
+            return sorted;
         }
     }
 }
