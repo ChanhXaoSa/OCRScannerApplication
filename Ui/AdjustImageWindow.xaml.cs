@@ -10,21 +10,23 @@ namespace Ui
 {
     public partial class AdjustImageWindow : System.Windows.Window
     {
-        private Mat originalImage;
+        private readonly Mat originalImage;
         private Mat displayImage;
         private OpenCvSharp.Rect detectedRect;
         private OpenCvSharp.Rect adjustedRect;
         private bool isDragging = false;
-        private int selectedCorner = -1; // 0: TopLeft, 1: TopRight, 2: BottomRight, 3: BottomLeft
-        private const int cornerSize = 20; // Tăng kích thước góc để dễ nhìn hơn
+        private int selectedCorner = -1;
+        private const int cornerSize = 20;
         private double scaleX, scaleY;
 
-        public Mat CroppedImage { get; private set; }
+        public Mat? CroppedImage { get; private set; } // Make CroppedImage nullable
 
         public AdjustImageWindow(Mat image)
         {
             InitializeComponent();
             originalImage = image.Clone();
+            displayImage = new Mat();
+            CroppedImage = null;
             DetectPaperRegion();
             UpdateDisplayImage();
         }
@@ -40,9 +42,7 @@ namespace Ui
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(7, 7));
             Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel, iterations: 3);
 
-            OpenCvSharp.Point[][] contours;
-            HierarchyIndex[] hierarchy;
-            Cv2.FindContours(mask, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
+            Cv2.FindContours(mask, out OpenCvSharp.Point[][] contours, out _, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
 
             double maxArea = 0;
             OpenCvSharp.Rect? paperRect = null;
@@ -121,10 +121,10 @@ namespace Ui
 
             Cv2.Rectangle(displayImage, adjustedRect, new Scalar(0, 255, 0), 2);
 
-            OpenCvSharp.Point topLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y);
-            OpenCvSharp.Point topRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
-            OpenCvSharp.Point bottomRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
-            OpenCvSharp.Point bottomLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point topLeft = new(adjustedRect.X, adjustedRect.Y);
+            OpenCvSharp.Point topRight = new(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
+            OpenCvSharp.Point bottomRight = new(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point bottomLeft = new(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
 
             Cv2.Circle(displayImage, topLeft, cornerSize, new Scalar(0, 0, 255), -1);
             Cv2.Circle(displayImage, topRight, cornerSize, new Scalar(0, 0, 255), -1);
@@ -140,12 +140,12 @@ namespace Ui
         private void ImgAdjustPreview_MouseDown(object sender, MouseButtonEventArgs e)
         {
             System.Windows.Point mousePos = e.GetPosition(ImgAdjustPreview);
-            OpenCvSharp.Point imagePos = new OpenCvSharp.Point((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
+            OpenCvSharp.Point imagePos = new((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
 
-            OpenCvSharp.Point topLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y);
-            OpenCvSharp.Point topRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
-            OpenCvSharp.Point bottomRight = new OpenCvSharp.Point(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
-            OpenCvSharp.Point bottomLeft = new OpenCvSharp.Point(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point topLeft = new(adjustedRect.X, adjustedRect.Y);
+            OpenCvSharp.Point topRight = new(adjustedRect.X + adjustedRect.Width, adjustedRect.Y);
+            OpenCvSharp.Point bottomRight = new(adjustedRect.X + adjustedRect.Width, adjustedRect.Y + adjustedRect.Height);
+            OpenCvSharp.Point bottomLeft = new(adjustedRect.X, adjustedRect.Y + adjustedRect.Height);
 
             if (IsPointNearCorner(imagePos, topLeft)) selectedCorner = 0;
             else if (IsPointNearCorner(imagePos, topRight)) selectedCorner = 1;
@@ -167,7 +167,7 @@ namespace Ui
             if (!isDragging || selectedCorner < 0) return;
 
             System.Windows.Point mousePos = e.GetPosition(ImgAdjustPreview);
-            OpenCvSharp.Point imagePos = new OpenCvSharp.Point((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
+            OpenCvSharp.Point imagePos = new((int)(mousePos.X * scaleX), (int)(mousePos.Y * scaleY));
 
             imagePos.X = Math.Max(0, Math.Min(originalImage.Width - 1, imagePos.X));
             imagePos.Y = Math.Max(0, Math.Min(originalImage.Height - 1, imagePos.Y));
@@ -221,7 +221,7 @@ namespace Ui
             e.Handled = true;
         }
 
-        private bool IsPointNearCorner(OpenCvSharp.Point point, OpenCvSharp.Point corner)
+        private static bool IsPointNearCorner(OpenCvSharp.Point point, OpenCvSharp.Point corner)
         {
             return Math.Abs(point.X - corner.X) <= cornerSize && Math.Abs(point.Y - corner.Y) <= cornerSize;
         }
@@ -241,7 +241,7 @@ namespace Ui
             Close();
         }
 
-        private BitmapSource BitmapSourceFromMat(Mat mat)
+        private static BitmapImage BitmapSourceFromMat(Mat mat)
         {
             using var stream = new MemoryStream();
             mat.WriteToStream(stream, ".png");

@@ -128,14 +128,13 @@ namespace Ui
                 {
                     try
                     {
-                        // Sử dụng biến đổi phối cảnh để cắt và chuẩn hóa tứ giác
                         Mat finalCropped = CropAndWarpPerspective(currentImage, lastDetectedInnerRect);
 
                         if (!finalCropped.Empty())
                         {
-                            currentImage.Dispose(); // Giải phóng currentImage cũ
-                            currentImage = finalCropped; // Gán currentImage mới
-                            ImgPreview.Source = BitmapSourceFromMat(currentImage); // Cập nhật hiển thị
+                            currentImage.Dispose();
+                            currentImage = finalCropped;
+                            ImgPreview.Source = BitmapSourceFromMat(currentImage);
                         }
                         else
                         {
@@ -195,7 +194,6 @@ namespace Ui
                     }
                     else if ((DateTime.Now - stableStartTime.Value).TotalSeconds >= StableDuration)
                     {
-                        // Tự động chụp
                         isAutoCapturing = true;
                         Dispatcher.Invoke(() =>
                         {
@@ -749,22 +747,15 @@ namespace Ui
             return outputImage;
         }
 
-        // Hàm phụ để sắp xếp các điểm tứ giác theo thứ tự: top-left, top-right, bottom-right, bottom-left
         private OpenCvSharp.Point[] SortQuadPoints(OpenCvSharp.Point[] quad)
         {
-            // Sắp xếp dựa trên tọa độ
             OpenCvSharp.Point[] sorted = new OpenCvSharp.Point[4];
 
-            // Tìm top-left (tổng x+y nhỏ nhất)
             sorted[0] = quad.OrderBy(p => p.X + p.Y).First();
-            // Tìm bottom-right (tổng x+y lớn nhất)
             sorted[2] = quad.OrderByDescending(p => p.X + p.Y).First();
-            // Tìm top-right (x lớn nhất, y nhỏ)
             sorted[1] = quad.OrderByDescending(p => p.X).ThenBy(p => p.Y).First();
-            // Tìm bottom-left (x nhỏ, y lớn)
             sorted[3] = quad.OrderBy(p => p.X).ThenByDescending(p => p.Y).First();
 
-            // Xử lý trường hợp các điểm bị trùng hoặc không đúng thứ tự
             if (sorted[1] == sorted[2]) sorted[1] = quad.Except(new[] { sorted[0], sorted[2], sorted[3] }).First();
             if (sorted[3] == sorted[2]) sorted[3] = quad.Except(new[] { sorted[0], sorted[1], sorted[2] }).First();
 
